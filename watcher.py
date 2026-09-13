@@ -87,6 +87,7 @@ def expand_rail_targets_for_wide_test(config: dict) -> dict:
                     "arrival": arrival,
                     "start": "050000",
                     "end": "235900",
+                    "suppress_initial_alert": True,
                 }
             )
 
@@ -160,6 +161,7 @@ def save_state(
     bus_availability_by_journey: dict[str, str],
     rail_availability_by_journey: dict[str, str],
     rail_quality_by_journey: dict[str, int],
+    baselined_target_ids: set[str] | None = None,
 ) -> None:
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(
@@ -173,6 +175,7 @@ def save_state(
                     sorted(rail_availability_by_journey.items())
                 ),
                 "rail_quality_by_journey": dict(sorted(rail_quality_by_journey.items())),
+                "baselined_target_ids": sorted(baselined_target_ids or set()),
             },
             ensure_ascii=False,
             indent=2,
@@ -297,6 +300,7 @@ def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
             "bus_availability_by_journey": {},
             "rail_availability_by_journey": {},
             "rail_quality_by_journey": {},
+            "baselined_target_ids": [],
         },
     )
     notified = set(state.get("notified_keys", []))
@@ -313,6 +317,13 @@ def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
         for key, value in state.get("rail_quality_by_journey", {}).items()
         if str(value).isdigit()
     }
+    baselined_target_ids = {str(value) for value in state.get("baselined_target_ids", [])}
+    baseline_target_ids = {
+        str(target["id"])
+        for target in config.get("rail_targets", [])
+        if target.get("suppress_initial_alert")
+    }
+    unbaselined_target_ids = baseline_target_ids - baselined_target_ids
     current_bus_availability = dict(previous_bus_availability)
     current_rail_availability = dict(previous_rail_availability)
     current_rail_quality = dict(previous_rail_quality)
@@ -443,10 +454,20 @@ def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
             # 실제 좌석에서 예약대기로 악화된 사실은 알리지 않는다.
             should_alert = is_new or reopened
 
+        is_initial_baseline = (
+            item.target_id in unbaselined_target_ids
+            and previous_signature is None
+            and not legacy_seen
+        )
+        if is_initial_baseline:
+            should_alert = False
+
         alert_type = rail_alert_type(item, previous_signature, previous_quality)
         safe, reason = rail_last_mile(item)
         if not safe:
             marker = "BLOCKED_LASTMILE"
+        elif is_initial_baseline:
+            marker = "BASELINE"
         elif should_alert:
             marker = alert_type.replace(" ", "_")
         else:
@@ -536,11 +557,15 @@ def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
             for key, value in current_rail_quality.items()
             if state_target_id(key) in active_rail_ids
         }
+        completed_baselines = baselined_target_ids | (
+            unbaselined_target_ids & successful_rail_targets
+        )
         save_state(
             (notified & alertable_now) | sent,
             current_bus_availability,
             current_rail_availability,
             current_rail_quality,
+            completed_baselines,
         )
     elapsed = time.perf_counter() - cycle_started
     print(
