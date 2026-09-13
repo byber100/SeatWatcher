@@ -8,6 +8,7 @@ from typing import Any, Iterable
 
 
 DEFAULT_ALERT_PAGE_URL = "https://byber100.github.io/SeatWatcher/"
+ALERT_PAGE_VERSION = "20260913-3"
 
 
 @dataclass(frozen=True)
@@ -117,7 +118,9 @@ def build_alert_page_url(events: Iterable[AlertEvent]) -> str:
     payload = [event.page_payload() for event in events]
     raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     encoded = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
-    return f"{base_url.split('#', 1)[0]}#d={encoded}"
+    page_url = base_url.split('#', 1)[0]
+    separator = "&" if "?" in page_url else "?"
+    return f"{page_url}{separator}v={ALERT_PAGE_VERSION}#d={encoded}"
 
 
 def bundle_text(events: list[AlertEvent]) -> str:
@@ -152,34 +155,34 @@ def demo_alert_events() -> list[AlertEvent]:
     return [
         AlertEvent(
             key="demo-rail",
-            alert_type="좌석 변동",
+            alert_type="테스트",
             transport="기차",
             provider="KORAIL",
-            date="20991231",
-            departure_time="123400",
-            departure="테스트역A",
-            arrival="테스트역B",
-            departure_code="",
-            arrival_code="",
-            route="테스트역A→테스트역B",
-            title="직통 · KTX 테스트 데이터",
-            current="일반실 1석",
-            change="일반실 3석 → 1석",
+            date="20260918",
+            departure_time="180000",
+            departure="서울",
+            arrival="동대구",
+            departure_code="0001",
+            arrival_code="0015",
+            route="서울→동대구",
+            title="🧪 조회조건 테스트 · 실제 운행편 아님",
+            current="9/18 주변 시간대 연결 확인",
+            change="실제 좌석 알림 아님",
         ),
         AlertEvent(
             key="demo-bus",
-            alert_type="예약 가능",
+            alert_type="테스트",
             transport="버스",
-            provider="KOBUS",
-            date="20991231",
-            departure_time="130000",
-            departure="테스트터미널A",
-            arrival="테스트터미널B",
+            provider="TMONEYGO",
+            date="20260918",
+            departure_time="180000",
+            departure="성남",
+            arrival="동대구",
             departure_code="",
             arrival_code="",
-            route="테스트터미널A→테스트터미널B",
-            title="고속버스 테스트 데이터",
-            current="잔여 2석",
-            change="매진 → 잔여 2석",
+            route="성남→동대구",
+            title="🧪 조회조건 테스트 · 실제 운행편 아님",
+            current="9/18 주변 시간대 연결 확인",
+            change="실제 좌석 알림 아님",
         ),
     ]

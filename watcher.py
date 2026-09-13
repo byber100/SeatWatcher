@@ -74,12 +74,7 @@ def expand_rail_targets_for_wide_test(config: dict) -> dict:
     preferred_pair = ("서울", "동대구")
     pairs = [preferred_pair, (preferred_pair[1], preferred_pair[0])]
 
-    kst = timezone(timedelta(hours=9))
-    today = datetime.now(kst).date()
-    dates = [
-        (today + timedelta(days=1)).strftime("%Y%m%d"),
-        (today + timedelta(days=2)).strftime("%Y%m%d"),
-    ]
+    dates = ["20260918"]
 
     extras: list[dict] = []
     for pair_index, (departure, arrival) in enumerate(pairs, start=1):
@@ -100,7 +95,7 @@ def expand_rail_targets_for_wide_test(config: dict) -> dict:
     print(
         "RAIL_TEST_SCOPE "
         f"expanded={len(extras)} dates={','.join(dates)} "
-        "routes=서울-동대구,동대구-서울 window=050000-235900"
+        "routes=서울-동대구,동대구-서울 window=050000-235900 soldout=separate"
     )
     return expanded
 

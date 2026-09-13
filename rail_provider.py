@@ -40,6 +40,7 @@ class ModeScanResult:
     filtered_transfer_count: int = 0
     dominated_transfer_count: int = 0
     waitlist_count: int = 0
+    sold_out_count: int = 0
     schedule_lines: list[str] = field(default_factory=list)
     transfer_station_counts: dict[str, int] = field(default_factory=dict)
 
@@ -386,9 +387,10 @@ def _direct(
                 station_names,
                 target["arrival"],
             )
+            availability_summary = _availability_summary(train)
             scan.schedule_lines.append(
                 f"{_time_text(dep)}→{_time_text(arrival_time)} | {_name(train)} | "
-                f"{_availability_summary(train)}"
+                f"{availability_summary}"
             )
 
             labels, categories = _seat_options(train)
@@ -397,6 +399,8 @@ def _direct(
             if waitlist and not labels:
                 scan.waitlist_count += 1
             if not labels and not waitlist:
+                if "매진" in availability_summary:
+                    scan.sold_out_count += 1
                 continue
             scan.candidates.append(
                 RailCandidate(
@@ -558,6 +562,8 @@ def _transfer(
             )
 
             if not first_labels or not second_labels:
+                if "매진" in first_state or "매진" in second_state:
+                    scan.sold_out_count += 1
                 continue
             scan.candidates.append(
                 RailCandidate(
@@ -780,7 +786,8 @@ def search_korail_targets(
                     )
 
             print(
-                f"  -> {status_text} | 감시 후보 {len(target_candidates)}건 "
+                f"  -> {status_text} | 직통 운행 {direct_scan.scheduled_count}건 / "
+                f"직통 매진 {direct_scan.sold_out_count}건 / 감시 후보 {len(target_candidates)}건 "
                 f"(지정좌석 {reserved_count} / 자유석 {free_count} / "
                 f"입석·혼합 {standing_count} / 예약대기 {waitlist_count})"
             )
@@ -793,6 +800,8 @@ def search_korail_targets(
                     f"standing_signals={direct_scan.standing_count + transfer_scan.standing_count} "
                     f"mixed_signals={direct_scan.mixed_count + transfer_scan.mixed_count} "
                     f"waitlist={waitlist_count} "
+                    f"direct_soldout={direct_scan.sold_out_count} "
+                    f"transfer_soldout={transfer_scan.sold_out_count} "
                     f"types={_types_text(direct_scan, transfer_scan)}"
                 )
                 for line in direct_scan.alternate_lines:
