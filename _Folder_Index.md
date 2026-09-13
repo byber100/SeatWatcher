@@ -7,9 +7,10 @@
 - `bus_providers.py`: KOBUS/티머니/버스타고 조회
 - `last_mile.py`: 장거리 도착 후 최종 이동 가능 여부 판정
 - `kakao_notify.py`: Kakao 알림 연동
-- `env_loader.py`: 로컬 환경변수 로더
-- `.env`: 실제 값이 비어 있는 설정 템플릿
-- `env.example.txt`: 환경변수 키 예시
+- `env_loader.py`: OS 환경변수 > `.env.local` > `.env` 순으로 로드하며 빈 템플릿 값은 무시
+- `.env`: Git에 추적되는 빈 설정 템플릿. 실제 비밀값 저장 금지
+- `.env.local`: 실제 로컬 비밀 설정 파일. Git 추적 금지
+- `env.example.txt`: `.env.local`에 복사해 사용할 환경변수 키 예시
 - `watch_targets.json`: 감시 대상 및 polling 설정. 공개 저장소에서는 실제 개인 일정을 비워 둔다.
 - `requirements.txt`: Python 의존성
 - `.vscode/`: VS Code 실행 설정

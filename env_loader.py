@@ -6,10 +6,13 @@ from pathlib import Path
 
 LEGACY_KORAIL_KEY = "SEATWATCHER_KORAIL_ID"
 KORAIL_MEMBER_NO_KEY = "SEATWATCHER_KORAIL_MEMBER_NO"
+PROJECT_DIR = Path(__file__).resolve().parent
+LOCAL_ENV = PROJECT_DIR / ".env.local"
+TEMPLATE_ENV = PROJECT_DIR / ".env"
 
 
 def _migrate_legacy_korail_key(env_path: Path) -> None:
-    """Rename the old KORAIL ID key in .env without exposing its value."""
+    """Rename the old KORAIL ID key without exposing its value."""
     text = env_path.read_text(encoding="utf-8")
     old_pattern = re.compile(rf"^(\s*){re.escape(LEGACY_KORAIL_KEY)}(\s*=)", re.MULTILINE)
     new_pattern = re.compile(rf"^\s*{re.escape(KORAIL_MEMBER_NO_KEY)}\s*=", re.MULTILINE)
@@ -18,7 +21,6 @@ def _migrate_legacy_korail_key(env_path: Path) -> None:
         return
 
     if new_pattern.search(text):
-        # A new key already exists, so remove only the obsolete duplicate line.
         text = re.sub(
             rf"^\s*{re.escape(LEGACY_KORAIL_KEY)}\s*=.*(?:\r?\n|$)",
             "",
@@ -31,9 +33,7 @@ def _migrate_legacy_korail_key(env_path: Path) -> None:
     env_path.write_text(text, encoding="utf-8")
 
 
-def load_project_env(path: Path | None = None) -> None:
-    """Load SeatWatcher/.env without overriding already-set OS variables."""
-    env_path = path or (Path(__file__).resolve().parent / ".env")
+def _load_env_file(env_path: Path) -> None:
     if not env_path.exists():
         return
 
@@ -43,6 +43,7 @@ def load_project_env(path: Path | None = None) -> None:
         line = raw_line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
+
         key, value = line.split("=", 1)
         key = key.strip()
         value = value.strip()
@@ -50,4 +51,19 @@ def load_project_env(path: Path | None = None) -> None:
             continue
         if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
             value = value[1:-1]
+        if not value:
+            continue
+
+        # Existing OS variables always win. Because .env.local is loaded first,
+        # local secrets also win over any non-secret fallback in the tracked template.
         os.environ.setdefault(key, value)
+
+
+def load_project_env(path: Path | None = None) -> None:
+    """Load local secrets first, then the tracked blank template as fallback."""
+    if path is not None:
+        _load_env_file(path)
+        return
+
+    _load_env_file(LOCAL_ENV)
+    _load_env_file(TEMPLATE_ENV)
