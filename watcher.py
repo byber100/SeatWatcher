@@ -38,7 +38,8 @@ from bus_providers import BusCandidate, search_user_bus_routes
 from env_loader import load_project_env
 from last_mile import bus_last_mile, rail_last_mile
 
-CONFIG = ROOT / "watch_targets.json"
+PUBLIC_CONFIG = ROOT / "watch_targets.json"
+LOCAL_CONFIG = ROOT / "watch_targets.local.json"
 STATE = ROOT / ".runtime" / "watch_state.json"
 
 
@@ -46,6 +47,11 @@ def load_json(path: Path, default: dict | None = None) -> dict:
     if default is not None and not path.exists():
         return default
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def load_config() -> dict:
+    path = LOCAL_CONFIG if LOCAL_CONFIG.exists() else PUBLIC_CONFIG
+    return load_json(path)
 
 
 def bus_key(target_id: str, item: BusCandidate) -> str:
@@ -297,7 +303,7 @@ def main() -> int:
     parser.add_argument("--notify", action="store_true", help="새 후보를 카카오로 알림")
     parser.add_argument("--rail-debug", action="store_true", help="KORAIL 상세 진단 로그 표시")
     args = parser.parse_args()
-    config = load_json(CONFIG)
+    config = load_config()
     interval = max(60, int(config.get("poll_interval_seconds", 180)))
     while True:
         try:

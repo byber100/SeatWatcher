@@ -28,11 +28,12 @@
 
 ## 동작 방식
 
-1. `watch_targets.json`에 감시할 교통편과 시간대를 설정합니다.
-2. SeatWatcher가 각 공급자의 운행 정보와 현재 좌석 상태를 반복 조회합니다.
-3. 이용 가능한 새 후보 또는 기존보다 좋아진 후보를 판정합니다.
-4. 조건을 만족하면 터미널에 표시하고, 설정한 경우 Kakao로 알립니다.
-5. 이후에도 상태를 계속 저장해 같은 내용의 불필요한 반복 알림을 줄입니다.
+1. 로컬에서는 `watch_targets.local.json`에 실제 감시할 교통편과 시간대를 설정합니다.
+2. 해당 파일이 없으면 공개 기본 설정인 `watch_targets.json`을 사용합니다.
+3. SeatWatcher가 각 공급자의 운행 정보와 현재 좌석 상태를 반복 조회합니다.
+4. 이용 가능한 새 후보 또는 기존보다 좋아진 후보를 판정합니다.
+5. 조건을 만족하면 터미널에 표시하고, 설정한 경우 Kakao로 알립니다.
+6. 이후에도 상태를 계속 저장해 같은 내용의 불필요한 반복 알림을 줄입니다.
 
 ## 빠른 시작
 
@@ -62,7 +63,14 @@ OS 환경변수 > .env.local > .env
 
 ### 3. 감시 대상 설정
 
-`watch_targets.json`에 감시 대상을 추가합니다. 공개 저장소의 기본 파일에는 개인 이동 일정이 들어 있지 않습니다.
+공개 저장소의 `watch_targets.json`은 개인 일정이 없는 기본 설정입니다. 실제 운영용 감시 조건은 같은 형식의 `watch_targets.local.json`에 저장하세요.
+
+```text
+watch_targets.json        -> Git 추적 공개 기본값
+watch_targets.local.json  -> 실제 개인 감시 설정, Git 추적 제외
+```
+
+`watch_targets.local.json`이 존재하면 자동으로 우선 사용합니다.
 
 ### 4. 실행
 
@@ -78,18 +86,33 @@ Kakao 알림까지 사용하려면:
 
 단일 조회 확인에는 `seatwatcher.py`를 사용할 수 있습니다.
 
+## 개발 Git 흐름
+
+`main`은 GitHub의 `origin/main`을 추적합니다. 일반적인 변경은 다음 순서를 사용합니다.
+
+```text
+git pull --ff-only
+→ 로컬 수정
+→ Python/JSON/보안 검증
+→ git commit
+→ git push origin main
+```
+
+실제 인증정보, 개인 이동 일정, 런타임 상태는 이 흐름에 포함하지 않습니다.
+
 ## 프로젝트 구조
 
 ```text
-watcher.py          반복 감시 실행기 / 상태 관리
-seatwatcher.py      단일 조회 CLI
-rail_provider.py    KORAIL 직통·환승 조회
-bus_providers.py    KOBUS·티머니·버스타고 조회
-last_mile.py        최종 이동 가능 여부 판정
-kakao_notify.py     Kakao 알림 연동
-env_loader.py       로컬 환경변수 로딩
-watch_targets.json  감시 대상 및 polling 설정
-docs/               개발 중 요구사항·판정 기준·작업 합의를 관리하는 협업 문서
+watcher.py                 반복 감시 실행기 / 상태 관리
+seatwatcher.py             단일 조회 CLI
+rail_provider.py           KORAIL 직통·환승 조회
+bus_providers.py           KOBUS·티머니·버스타고 조회
+last_mile.py               최종 이동 가능 여부 판정
+kakao_notify.py            Kakao 알림 연동
+env_loader.py              로컬 환경변수 로딩
+watch_targets.json         공개 기본 감시 설정
+watch_targets.local.json   실제 개인 감시 설정, Git 제외
+docs/                      개발 중 요구사항·판정 기준·작업 합의를 관리하는 협업 문서
 ```
 
 `docs/`는 프로젝트를 외부에 소개하기 위한 문서가 아니라, 개발 과정에서 요구사항과 구현 판단을 맞추기 위한 작업 공간입니다. 프로젝트 소개와 사용 안내는 이 README를 기준으로 합니다.

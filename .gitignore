@@ -6,3 +6,5 @@ __pycache__/
 !.env.example
 .pytest_cache/
 .runtime/
+watch_targets.local.json
+*.gdoc
