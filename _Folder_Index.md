@@ -1,7 +1,7 @@
 # SeatWatcher 폴더 인덱스
 
 - `README.md`: 외부 사용자와 방문자에게 프로젝트 목적, 지원 기능, 실행 방법, 주의사항을 소개하는 대표 문서
-- `docs/`: 사용자와 ChatGPT가 개발 중 요구사항·판정 기준·구현 방향·검증 결과를 맞추는 협업 문서 공간이며 `index.md`는 GitHub Pages 알림 상세 화면
+- `docs/`: 사용자와 ChatGPT가 개발 중 요구사항·판정 기준·구현 방향·검증 결과를 맞추는 협업 문서 공간. GitHub Pages 배포 루트와 분리
 - `deploy/`: 클라우드 Linux VM 설치 및 systemd 서비스 운영 도구
 - `watcher.py`: 반복 감시 실행기, 잔여석/예매 형태 변동 상태 관리, polling 스케줄링. `watch_targets.local.json`이 있으면 공개 기본 설정보다 우선 사용
 - `alert_bundle.py`: 같은 cycle의 변동을 Kakao 1개 메시지로 묶고 GitHub Pages 상세 링크 payload를 생성

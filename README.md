@@ -68,7 +68,7 @@ python3 deploy/cloud_vm_manage.py logs
 
 서비스는 부팅 시 자동 시작되고 비정상 종료 시 자동 재시작됩니다. 애플리케이션용 인바운드 포트나 별도 웹서버는 필요하지 않습니다.
 
-GitHub Pages는 저장소 `Settings > Pages`에서 `Deploy from a branch`, `main`, `/docs`를 한 번 지정하면 됩니다. 알림 상세 화면 주소는 기본적으로 `https://byber100.github.io/SeatWatcher/`를 사용합니다. Kakao Developers의 제품 링크 Web 도메인에도 `https://byber100.github.io`를 추가해야 `예매 확인` 버튼이 정상 이동합니다.
+GitHub Pages는 개발 협업용 `docs/`와 분리해 전용 `gh-pages` 브랜치의 `/(root)`에서 배포합니다. 저장소 `Settings > Pages`에서 `Deploy from a branch`, `gh-pages`, `/(root)`를 지정합니다. 알림 상세 화면 주소는 기본적으로 `https://byber100.github.io/SeatWatcher/`를 사용합니다. Kakao Developers의 제품 링크 Web 도메인에도 `https://byber100.github.io`를 추가해야 `예매 확인` 버튼이 정상 이동합니다.
 
 ## 빠른 시작
 
@@ -156,7 +156,7 @@ kakao_notify.py            Kakao 알림 연동
 env_loader.py              로컬 환경변수 로딩
 watch_targets.json         공개 기본 감시 설정
 watch_targets.local.json   실제 개인 감시 설정, Git 제외
-docs/                      개발 협업 문서 + GitHub Pages 상세 화면(index.md)
+docs/                      개발 협업 SSOT/작업일지; Pages 배포 대상과 분리
 deploy/cloud_vm_manage.py  Linux VM 설치 / systemd 서비스 관리
 ```
 
