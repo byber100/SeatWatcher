@@ -278,7 +278,7 @@ def search_tmoney(
         )
 
     candidates: list[BusCandidate] = []
-    seen: set{tuple[str, str | None]} = set()
+    seen: set[tuple[str, str | None]] = set()
     for match in _TMONEY_CALL_RE.finditer(body):
         args = [value.replace("\\'", "'") for value in _QUOTED_ARG_RE.findall(match.group(1))]
         if len(args) < 18:

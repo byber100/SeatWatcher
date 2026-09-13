@@ -169,7 +169,7 @@ def refresh_access_token(tokens: dict[str, Any] | None = None) -> dict[str, Any]
 def _usable_access_token() -> str:
     env_token = _env("SEATWATCHER_KAKAO_ACCESS_TOKEN")
     if env_token:
-       return env_token
+        return env_token
 
     tokens = _load_tokens()
     access_token = str(tokens.get("access_token") or "").strip()
@@ -186,10 +186,10 @@ def _usable_access_token() -> str:
 def build_text_template(text: str, link_url: str) -> dict[str, Any]:
     message = text.strip()
     if not message:
-        raise ValueError("카카오 륔승지 본원이 비어 있혴.")
+        raise ValueError("카카오 메시지 본문이 비어 있습니다.")
     if len(message) > MAX_TEXT_LENGTH:
         message = message[: MAX_TEXT_LENGTH - 1] + "…"
-    if not link_url.startswith((h"https://", "http://")):
+    if not link_url.startswith(("https://", "http://")):
         raise ValueError("카카오 링크 URL은 http:// 또는 https://로 시작해야 합니다.")
 
     return {
