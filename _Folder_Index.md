@@ -1,6 +1,7 @@
 # SeatWatcher 폴더 인덱스
 
-- `docs/`: 공개용 설계 기준
+- `README.md`: 외부 사용자와 방문자에게 프로젝트 목적, 지원 기능, 실행 방법, 주의사항을 소개하는 대표 문서
+- `docs/`: 사용자와 ChatGPT가 개발 중 요구사항·판정 기준·구현 방향·검증 결과를 맞추는 협업 문서 공간
 - `watcher.py`: 반복 감시 실행기와 알림 상태 관리
 - `seatwatcher.py`: 단일 조회 CLI
 - `rail_provider.py`: KORAIL 직통/환승 조회
@@ -15,4 +16,4 @@
 - `requirements.txt`: Python 의존성
 - `.vscode/`: VS Code 실행 설정
 
-실제 인증정보, 런타임 토큰/상태, 개인 이동 일정은 Git 이력에 저장하지 않는다.
+외부 소개는 `README.md`, 개발 협업의 세부 기준은 `docs/`에서 관리한다. 실제 인증정보, 런타임 토큰/상태, 개인 이동 일정은 Git 이력에 저장하지 않는다.
