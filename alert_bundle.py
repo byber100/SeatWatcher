@@ -109,7 +109,9 @@ def build_alert_page_url(events: Iterable[AlertEvent]) -> str:
 
 
 def bundle_text(events: list[AlertEvent]) -> str:
-    lines = [f"🚨 SeatWatcher | 예매 변동 {len(events)}건", ""]
+    demo = bool(events) and all(event.key.startswith("demo-") for event in events)
+    heading = "🧪 SeatWatcher 테스트 알림" if demo else "🚨 SeatWatcher"
+    lines = [f"{heading} | 예매 변동 {len(events)}건", ""]
     for index, event in enumerate(events[:2]):
         if index:
             lines.append("")
@@ -141,10 +143,10 @@ def demo_alert_events() -> list[AlertEvent]:
             alert_type="좌석 변동",
             transport="기차",
             provider="KORAIL",
-            date="20260923",
-            departure_time="183400",
-            route="서울→동대구",
-            title="직통 · KTX 테스트",
+            date="20991231",
+            departure_time="123400",
+            route="테스트역A→테스트역B",
+            title="직통 · KTX 테스트 데이터",
             current="일반실 1석",
             change="일반실 3석 → 1석",
         ),
@@ -153,10 +155,10 @@ def demo_alert_events() -> list[AlertEvent]:
             alert_type="예약 가능",
             transport="버스",
             provider="KOBUS",
-            date="20260924",
-            departure_time="191000",
-            route="인천→동대구",
-            title="고속버스 테스트",
+            date="20991231",
+            departure_time="130000",
+            route="테스트터미널A→테스트터미널B",
+            title="고속버스 테스트 데이터",
             current="잔여 2석",
             change="매진 → 잔여 2석",
         ),
