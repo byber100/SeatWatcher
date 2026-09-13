@@ -6,6 +6,8 @@ import os
 import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
+from dataclasses import replace
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -77,12 +79,55 @@ def rail_quality(item: object) -> int:
     return min(first, second)
 
 
-def save_state(notified: set[str], rail_quality_by_journey: dict[str, int]) -> None:
+UNAVAILABLE_SIGNATURE = "unavailable"
+
+
+def target_query_key(target: dict) -> tuple[str, str, str, str, str]:
+    return tuple(
+        str(target.get(name, ""))
+        for name in ("departure", "arrival", "date", "start", "end")
+    )
+
+
+def state_target_id(item_key: str) -> str:
+    return item_key.split("|", 1)[0]
+
+
+def is_rail_state_key(item_key: str) -> bool:
+    parts = item_key.split("|", 2)
+    return len(parts) >= 2 and parts[1] == "KORAIL"
+
+
+def bus_availability_signature(item: BusCandidate) -> str:
+    if not item.bookable:
+        return UNAVAILABLE_SIGNATURE
+    remaining = "?" if item.remaining_seats is None else str(item.remaining_seats)
+    return f"bookable|remaining={remaining}"
+
+
+def rail_availability_signature(item: object) -> str:
+    quality = rail_quality(item)
+    prefix = "bookable" if quality > 0 else "waitlist"
+    return f"{prefix}|quality={quality}|{getattr(item, 'seat_text', '')}"
+
+
+def save_state(
+    notified: set[str],
+    bus_availability_by_journey: dict[str, str],
+    rail_availability_by_journey: dict[str, str],
+    rail_quality_by_journey: dict[str, int],
+) -> None:
     STATE.parent.mkdir(parents=True, exist_ok=True)
     STATE.write_text(
         json.dumps(
             {
                 "notified_keys": sorted(notified),
+                "bus_availability_by_journey": dict(
+                    sorted(bus_availability_by_journey.items())
+                ),
+                "rail_availability_by_journey": dict(
+                    sorted(rail_availability_by_journey.items())
+                ),
                 "rail_quality_by_journey": dict(sorted(rail_quality_by_journey.items())),
             },
             ensure_ascii=False,
@@ -97,28 +142,40 @@ def send_message(text: str) -> None:
     send_to_me(text)
 
 
-def bus_message(item: BusCandidate, last_mile: str) -> str:
+def bus_message(item: BusCandidate, last_mile: str, alert_type: str) -> str:
     seats = f"잔여 {item.remaining_seats}석" if item.remaining_seats is not None else "좌석 가능"
     schedule = f" {item.schedule_type}" if item.schedule_type else ""
     return (
-        f"[SeatWatcher][예약 가능][버스] {item.date[4:6]}/{item.date[6:8]} "
+        f"[SeatWatcher][{alert_type}][버스] {item.date[4:6]}/{item.date[6:8]} "
         f"{item.departure_time[:2]}:{item.departure_time[2:4]} "
         f"{item.departure_terminal}→{item.arrival_terminal} {item.provider}{schedule} {seats}. "
         f"{last_mile}"
     )
 
 
-def rail_alert_type(item: object, *, improved: bool = False) -> str:
-    if improved:
-        return "좌석 품질 상승"
-    if rail_quality(item) <= 0:
+def rail_alert_type(
+    item: object,
+    previous_signature: str | None,
+    previous_quality: int | None,
+) -> str:
+    quality = rail_quality(item)
+    if quality <= 0:
         return "예약대기"
-    return "예약 가능"
+    if previous_signature == UNAVAILABLE_SIGNATURE or (
+        previous_signature is not None and previous_signature.startswith("waitlist|")
+    ):
+        return "예약 가능"
+    if previous_signature is None:
+        if previous_quality is not None and previous_quality > 0 and quality > previous_quality:
+            return "좌석 품질 상승"
+        return "예약 가능"
+    if previous_quality is not None and quality > previous_quality:
+        return "좌석 품질 상승"
+    return "좌석 변동"
 
 
-def rail_message(item: object, last_mile: str, *, improved: bool = False) -> str:
+def rail_message(item: object, last_mile: str, alert_type: str) -> str:
     kind_text = "직통" if item.kind == "DIRECT" else "환승"
-    alert_type = rail_alert_type(item, improved=improved)
     return (
         f"[SeatWatcher][{alert_type}][기차 {kind_text}] {item.date[4:6]}/{item.date[6:8]} "
         f"{item.departure_time[:2]}:{item.departure_time[2:4]} "
@@ -129,39 +186,88 @@ def rail_message(item: object, last_mile: str, *, improved: bool = False) -> str
 
 def collect_bus(config: dict) -> list[tuple[dict, list[BusCandidate]]]:
     scans: list[tuple[dict, list[BusCandidate]]] = []
+    cache: dict[tuple[str, str, str, str, str], list[BusCandidate]] = {}
+    reused = 0
     for target in config.get("bus_targets", []):
-        try:
-            items = search_user_bus_routes(
-                target["departure"], target["arrival"], target["date"],
-                target["start"], target["end"],
-                include_unavailable=True,
-            )
-        except Exception as exc:
-            print(f"WARNING bus target={target.get('id', '?')}: {exc}")
-            items = []
+        query_key = target_query_key(target)
+        if query_key in cache:
+            items = cache[query_key]
+            reused += 1
+        else:
+            try:
+                items = search_user_bus_routes(
+                    target["departure"], target["arrival"], target["date"],
+                    target["start"], target["end"],
+                    include_unavailable=True,
+                )
+            except Exception as exc:
+                print(f"WARNING bus target={target.get('id', '?')}: {exc}")
+                items = []
+            cache[query_key] = items
         scans.append((target, items))
+    if reused:
+        print(f"BUS_QUERY_REUSE exact={reused}")
     return scans
 
 
-def collect_rail(config: dict, *, debug: bool = False) -> list[object]:
+def collect_rail(
+    config: dict,
+    *,
+    debug: bool = False,
+) -> tuple[list[object], set[str]]:
     targets = config.get("rail_targets", [])
     if not targets:
-        return []
+        return [], set()
     if not os.getenv("SEATWATCHER_KORAIL_MEMBER_NO") or not os.getenv("SEATWATCHER_KORAIL_PASSWORD"):
         print("KORAIL_SKIPPED credentials_missing")
-        return []
+        return [], set()
+
+    unique_targets: list[dict] = []
+    representative_by_query: dict[tuple[str, str, str, str, str], str] = {}
+    aliases_by_representative: dict[str, list[str]] = {}
+    for target in targets:
+        target_id = str(target["id"])
+        query_key = target_query_key(target)
+        representative = representative_by_query.get(query_key)
+        if representative is None:
+            representative_by_query[query_key] = target_id
+            aliases_by_representative[target_id] = [target_id]
+            unique_targets.append(target)
+        elif target_id not in aliases_by_representative[representative]:
+            aliases_by_representative[representative].append(target_id)
+
+    reused = len(targets) - len(unique_targets)
+    if reused:
+        print(f"KORAIL_QUERY_REUSE exact={reused}")
+
     try:
         from rail_provider import search_korail_targets
-        return search_korail_targets(
-            targets,
+
+        representative_status: dict[str, bool] = {}
+        rows = search_korail_targets(
+            unique_targets,
             debug=debug,
             transfer_display_direct_threshold=int(
                 config.get("transfer_display_direct_threshold", 3)
             ),
+            target_status=representative_status,
         )
+        expanded: list[object] = []
+        for item in rows:
+            aliases = aliases_by_representative.get(str(item.target_id), [str(item.target_id)])
+            for target_id in aliases:
+                expanded.append(
+                    item if target_id == str(item.target_id) else replace(item, target_id=target_id)
+                )
+
+        successful_targets: set[str] = set()
+        for representative, aliases in aliases_by_representative.items():
+            if representative_status.get(representative, False):
+                successful_targets.update(aliases)
+        return expanded, successful_targets
     except Exception as exc:
         print(f"WARNING KORAIL cycle: {exc}")
-        return []
+        return [], set()
 
 
 def notify_new(item_key: str, text: str, notify: bool, sent: set[str]) -> bool:
@@ -179,28 +285,52 @@ def notify_new(item_key: str, text: str, notify: bool, sent: set[str]) -> bool:
 
 def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
     cycle_started = time.perf_counter()
-    state = load_json(STATE, {"notified_keys": [], "rail_quality_by_journey": {}})
+    state = load_json(
+        STATE,
+        {
+            "notified_keys": [],
+            "bus_availability_by_journey": {},
+            "rail_availability_by_journey": {},
+            "rail_quality_by_journey": {},
+        },
+    )
     notified = set(state.get("notified_keys", []))
+    previous_bus_availability = {
+        str(key): str(value)
+        for key, value in state.get("bus_availability_by_journey", {}).items()
+    }
+    previous_rail_availability = {
+        str(key): str(value)
+        for key, value in state.get("rail_availability_by_journey", {}).items()
+    }
     previous_rail_quality = {
         str(key): int(value)
         for key, value in state.get("rail_quality_by_journey", {}).items()
         if str(value).isdigit()
     }
-    current_rail_quality: dict[str, int] = {}
+    current_bus_availability = dict(previous_bus_availability)
+    current_rail_availability = dict(previous_rail_availability)
+    current_rail_quality = dict(previous_rail_quality)
     alertable_now: set[str] = set()
     sent: set[str] = set()
 
-    bus_scans = collect_bus(config)
+    # 버스와 철도는 서로 다른 서비스이므로 네트워크 대기를 겹쳐도
+    # 동일 공급자에 대한 요청 빈도는 늘지 않는다.
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        bus_future = executor.submit(collect_bus, config)
+        rails, successful_rail_targets = collect_rail(config, debug=rail_debug)
+        bus_scans = bus_future.result()
+
     buses: list[tuple[str, BusCandidate]] = []
     bus_total = len(bus_scans)
     for index, (target, items) in enumerate(bus_scans, 1):
-        target_id = target["id"]
+        target_id = str(target["id"])
         date = str(target["date"])
         date_text = f"{date[4:6]}/{date[6:8]}"
-        start = str(target["start"])
-        end = str(target["end"])
-        start_text = f"{start[:2]}:{start[2:4]}"
-        end_text = f"{end[:2]}:{end[2:4]}"
+        start_time = str(target["start"])
+        end_time = str(target["end"])
+        start_text = f"{start_time[:2]}:{start_time[2:4]}"
+        end_text = f"{end_time[:2]}:{end_time[2:4]}"
         print(
             f"[버스 {index:02d}/{bus_total:02d}] {date_text} "
             f"{target['departure']}->{target['arrival']} {start_text}~{end_text}"
@@ -232,41 +362,87 @@ def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
                 f"{item.provider} | {company} | {bus_class} | {schedule} | {availability}"
             )
 
+            item_key = bus_key(target_id, item)
+            current_signature = bus_availability_signature(item)
+            previous_signature = previous_bus_availability.get(item_key)
+            legacy_seen = previous_signature is None and item_key in notified
+
             if not item.bookable:
+                current_bus_availability[item_key] = UNAVAILABLE_SIGNATURE
                 continue
 
             buses.append((target_id, item))
-            item_key = bus_key(target_id, item)
             safe, reason = bus_last_mile(item)
-            is_new = item_key not in notified
             if not safe:
+                current_bus_availability[item_key] = current_signature
                 print(f"    ! 최종교통 제외: {reason}")
                 continue
+
             alertable_now.add(item_key)
-            if is_new:
-                print(f"    + NEW | {reason}")
-                notify_new(item_key, bus_message(item, reason), notify, sent)
+            alert_type: str | None = None
+            if previous_signature is None:
+                if not legacy_seen:
+                    alert_type = "예약 가능"
+            elif previous_signature == UNAVAILABLE_SIGNATURE:
+                alert_type = "예약 가능"
+            elif previous_signature != current_signature:
+                alert_type = "좌석 변동"
+
+            if alert_type is not None:
+                marker = "NEW" if alert_type == "예약 가능" else "CHANGED"
+                print(f"    + {marker} | {availability} | {reason}")
+                delivered = notify_new(
+                    item_key,
+                    bus_message(item, reason, alert_type),
+                    notify,
+                    sent,
+                )
+                if notify and not delivered:
+                    continue
+            current_bus_availability[item_key] = current_signature
 
         print(f"  -> 완료 | 배차 {len(items)}편 | 현재 예약 가능 {available_count}편")
 
-    rails = collect_rail(config, debug=rail_debug)
     rail_direct = sum(1 for item in rails if item.kind == "DIRECT")
     rail_transfer = sum(1 for item in rails if item.kind == "TRANSFER")
     print(f"기차 이용 가능 후보 | 직통 {rail_direct} | 환승 {rail_transfer}")
+    current_rail_keys: set[str] = set()
     for item in rails:
         item_key = rail_key(item)
+        current_rail_keys.add(item_key)
         quality = rail_quality(item)
+        current_signature = rail_availability_signature(item)
+        previous_signature = previous_rail_availability.get(item_key)
         previous_quality = previous_rail_quality.get(item_key)
-        legacy_seen = item_key in notified
-        is_new = previous_quality is None and not legacy_seen
-        improved = previous_quality is not None and quality > previous_quality
+        legacy_seen = previous_signature is None and (
+            item_key in notified or previous_quality is not None
+        )
+        is_new = previous_signature is None and not legacy_seen
+        reopened = previous_signature == UNAVAILABLE_SIGNATURE
+        signature_changed = (
+            previous_signature is not None
+            and previous_signature != current_signature
+        )
+        legacy_improved = (
+            previous_signature is None
+            and previous_quality is not None
+            and previous_quality > 0
+            and quality > previous_quality
+        )
+        currently_bookable = quality > 0
+        if currently_bookable:
+            should_alert = is_new or reopened or signature_changed or legacy_improved
+        else:
+            # 예약대기는 별도 상태다. 신규/매진 후 예약대기 진입만 알리고,
+            # 실제 좌석에서 예약대기로 악화된 사실은 알리지 않는다.
+            should_alert = is_new or reopened
+
+        alert_type = rail_alert_type(item, previous_signature, previous_quality)
         safe, reason = rail_last_mile(item)
         if not safe:
             marker = "BLOCKED_LASTMILE"
-        elif improved:
-            marker = f"UPGRADED {previous_quality}->{quality}"
-        elif is_new:
-            marker = "NEW"
+        elif should_alert:
+            marker = alert_type.replace(" ", "_")
         else:
             marker = "ACTIVE"
 
@@ -283,33 +459,64 @@ def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
         print(f"  이용형태: {item.seat_text}")
         print(f"  연결: {reason}")
         if not safe:
+            current_rail_availability[item_key] = current_signature
+            current_rail_quality[item_key] = quality
             continue
 
         alertable_now.add(item_key)
-        should_alert = is_new or improved
         if should_alert:
-            if improved:
-                print(f"    + UPGRADED | 이용품질 {previous_quality}->{quality}")
+            print(f"    + {alert_type} | {item.seat_text}")
             delivered = notify_new(
                 item_key,
-                rail_message(item, reason, improved=improved),
+                rail_message(item, reason, alert_type),
                 notify,
                 sent,
             )
             if notify and not delivered:
-                if previous_quality is not None:
-                    current_rail_quality[item_key] = previous_quality
                 continue
+        current_rail_availability[item_key] = current_signature
         current_rail_quality[item_key] = quality
 
+    known_rail_keys = (
+        set(previous_rail_availability)
+        | set(previous_rail_quality)
+        | {key for key in notified if is_rail_state_key(key)}
+    )
+    for item_key in known_rail_keys - current_rail_keys:
+        if state_target_id(item_key) not in successful_rail_targets:
+            continue
+        current_rail_availability[item_key] = UNAVAILABLE_SIGNATURE
+        current_rail_quality.pop(item_key, None)
+
     if notify:
-        save_state((notified & alertable_now) | sent, current_rail_quality)
+        active_bus_ids = {str(target["id"]) for target in config.get("bus_targets", [])}
+        active_rail_ids = {str(target["id"]) for target in config.get("rail_targets", [])}
+        current_bus_availability = {
+            key: value
+            for key, value in current_bus_availability.items()
+            if state_target_id(key) in active_bus_ids
+        }
+        current_rail_availability = {
+            key: value
+            for key, value in current_rail_availability.items()
+            if state_target_id(key) in active_rail_ids
+        }
+        current_rail_quality = {
+            key: value
+            for key, value in current_rail_quality.items()
+            if state_target_id(key) in active_rail_ids
+        }
+        save_state(
+            (notified & alertable_now) | sent,
+            current_bus_availability,
+            current_rail_availability,
+            current_rail_quality,
+        )
     elapsed = time.perf_counter() - cycle_started
     print(
         f"SUMMARY bus={len(buses)} rail={len(rails)} alertable={len(alertable_now)} "
         f"notify={notify} cycle_seconds={elapsed:.1f}"
     )
-
 
 def main() -> int:
     load_project_env()
@@ -319,16 +526,23 @@ def main() -> int:
     parser.add_argument("--rail-debug", action="store_true", help="KORAIL 상세 진단 로그 표시")
     args = parser.parse_args()
     config = load_config()
-    interval = max(60, int(config.get("poll_interval_seconds", 180)))
+    interval = max(60, int(config.get("poll_interval_seconds", 120)))
     while True:
+        cycle_started = time.perf_counter()
         try:
             run_once(config, args.notify, rail_debug=args.rail_debug)
         except Exception as exc:
             print(f"ERROR cycle: {exc}")
         if not args.watch:
             return 0
+        elapsed = time.perf_counter() - cycle_started
+        sleep_seconds = max(0.0, interval - elapsed)
+        print(
+            f"NEXT_POLL target_interval={interval}s "
+            f"cycle_seconds={elapsed:.1f} sleep_seconds={sleep_seconds:.1f}"
+        )
         try:
-            time.sleep(interval)
+            time.sleep(sleep_seconds)
         except KeyboardInterrupt:
             print("SeatWatcher stopped")
             return 0

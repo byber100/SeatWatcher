@@ -412,7 +412,7 @@ def _direct(
                 )
             )
 
-        if page_departures and min(page_departures) > target["end"]:
+        if page_departures and max(page_departures) > target["end"]:
             break
 
         next_continuation = result.next_page()
@@ -571,7 +571,7 @@ def _transfer(
                 )
             )
 
-        if page_departures and min(page_departures) > target["end"]:
+        if page_departures and max(page_departures) > target["end"]:
             break
 
         next_continuation = result.next_page()
@@ -627,6 +627,7 @@ def search_korail_targets(
     *,
     debug: bool = False,
     transfer_display_direct_threshold: int = DEFAULT_TRANSFER_DISPLAY_DIRECT_THRESHOLD,
+    target_status: dict[str, bool] | None = None,
 ) -> list[RailCandidate]:
     member_no = os.getenv("SEATWATCHER_KORAIL_MEMBER_NO", "").strip()
     password = os.getenv("SEATWATCHER_KORAIL_PASSWORD", "")
@@ -731,6 +732,8 @@ def search_korail_targets(
             standing_count = sum(_candidate_availability_rank(item) == 1 for item in target_candidates)
             waitlist_count = direct_scan.waitlist_count
             status_text = "일부실패" if target_failed else "완료"
+            if target_status is not None:
+                target_status[str(target_id)] = not target_failed
 
             print("  직통 운행")
             if direct_scan.schedule_lines:
