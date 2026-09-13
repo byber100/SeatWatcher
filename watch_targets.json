@@ -1,0 +1,6 @@
+{
+  "poll_interval_seconds": 120,
+  "transfer_display_direct_threshold": 3,
+  "bus_targets": [],
+  "rail_targets": []
+}

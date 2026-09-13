@@ -1,0 +1,28 @@
+{
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "SeatWatcher: Watch",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/watcher.py",
+      "console": "integratedTerminal",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "args": [
+        "--watch"
+      ]
+    },
+    {
+      "name": "SeatWatcher: Watch + Kakao",
+      "type": "debugpy",
+      "request": "launch",
+      "program": "${workspaceFolder}/watcher.py",
+      "console": "integratedTerminal",
+      "python": "${workspaceFolder}/.venv/Scripts/python.exe",
+      "args": [
+        "--watch",
+        "--notify"
+      ]
+    }
+  ]
+}
