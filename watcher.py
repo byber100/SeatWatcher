@@ -101,19 +101,29 @@ def bus_message(item: BusCandidate, last_mile: str) -> str:
     seats = f"잔여 {item.remaining_seats}석" if item.remaining_seats is not None else "좌석 가능"
     schedule = f" {item.schedule_type}" if item.schedule_type else ""
     return (
-        f"[SeatWatcher] {item.date[4:6]}/{item.date[6:8]} "
+        f"[SeatWatcher][예약 가능][버스] {item.date[4:6]}/{item.date[6:8]} "
         f"{item.departure_time[:2]}:{item.departure_time[2:4]} "
         f"{item.departure_terminal}→{item.arrival_terminal} {item.provider}{schedule} {seats}. "
         f"{last_mile}"
     )
 
 
-def rail_message(item: object, last_mile: str) -> str:
+def rail_alert_type(item: object, *, improved: bool = False) -> str:
+    if improved:
+        return "좌석 품질 상승"
+    if rail_quality(item) <= 0:
+        return "예약대기"
+    return "예약 가능"
+
+
+def rail_message(item: object, last_mile: str, *, improved: bool = False) -> str:
+    kind_text = "직통" if item.kind == "DIRECT" else "환승"
+    alert_type = rail_alert_type(item, improved=improved)
     return (
-        f"[SeatWatcher] {item.date[4:6]}/{item.date[6:8]} "
+        f"[SeatWatcher][{alert_type}][기차 {kind_text}] {item.date[4:6]}/{item.date[6:8]} "
         f"{item.departure_time[:2]}:{item.departure_time[2:4]} "
         f"{item.departure_station}→{item.arrival_station} {item.train_text} "
-        f"{item.kind} {item.seat_text}. {last_mile}"
+        f"{item.seat_text}. {last_mile}"
     )
 
 
@@ -280,7 +290,12 @@ def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
         if should_alert:
             if improved:
                 print(f"    + UPGRADED | 이용품질 {previous_quality}->{quality}")
-            delivered = notify_new(item_key, rail_message(item, reason), notify, sent)
+            delivered = notify_new(
+                item_key,
+                rail_message(item, reason, improved=improved),
+                notify,
+                sent,
+            )
             if notify and not delivered:
                 if previous_quality is not None:
                     current_rail_quality[item_key] = previous_quality
