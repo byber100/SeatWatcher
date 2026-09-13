@@ -7,7 +7,7 @@
 <title>SeatWatcher 예매 확인</title>
 <style>
 :root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#172033;background:#f4f6fa;line-height:1.45}
-*{box-sizing:border-box}body{margin:0;background:#f4f6fa}main{max-width:720px;margin:0 auto;padding:24px 16px 48px}.hero{padding:18px 4px 14px}.eyebrow{font-size:13px;font-weight:800;color:#67728a;letter-spacing:.04em}h1{margin:6px 0;font-size:28px}.sub{margin:0;color:#6a7488;font-size:14px}.summary{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 20px}.pill{background:#fff;border:1px solid #e1e5ec;border-radius:999px;padding:7px 11px;font-size:13px;font-weight:700}.list{display:grid;gap:12px}.card{background:#fff;border:1px solid #e2e6ee;border-radius:18px;padding:17px;box-shadow:0 5px 18px rgba(24,34,52,.05)}.top{display:flex;justify-content:space-between;gap:12px}.mode{font-size:13px;font-weight:800;color:#59657b}.badge{font-size:12px;font-weight:800;padding:5px 9px;border-radius:999px;white-space:nowrap}.available{background:#e8f7ef;color:#137a49}.changed{background:#eef3ff;color:#315fc4}.up{background:#fff4de;color:#9b5d00}.wait{background:#f1efff;color:#6552bb}.route{font-size:21px;font-weight:850;margin:8px 0 2px}.when{font-size:15px;color:#536078;font-weight:700}.train{margin:8px 0 0;color:#6a7488;font-size:13px}.change{margin-top:15px;padding:12px 13px;background:#f6f8fb;border-radius:12px;font-size:15px;font-weight:800}.search-window{margin-top:9px;color:#526078;font-size:12px;font-weight:700}.book{display:block;width:100%;text-align:center;text-decoration:none;background:#19233a;color:#fff;border:0;border-radius:12px;padding:11px 14px;font:inherit;font-weight:800;margin-top:14px;cursor:pointer}.book:active{transform:translateY(1px)}.book-note{margin:7px 2px 0;color:#7b8497;font-size:11px;text-align:center}.privacy{margin-top:24px;color:#7b8497;font-size:12px}.empty{background:#fff;border:1px solid #e2e6ee;border-radius:18px;padding:28px 20px;text-align:center;color:#657087}
+*{box-sizing:border-box}body{margin:0;background:#f4f6fa}main{max-width:720px;margin:0 auto;padding:24px 16px 48px}.hero{padding:18px 4px 14px}.eyebrow{font-size:13px;font-weight:800;color:#67728a;letter-spacing:.04em}h1{margin:6px 0;font-size:28px}.sub{margin:0;color:#6a7488;font-size:14px}.summary{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 20px}.pill{background:#fff;border:1px solid #e1e5ec;border-radius:999px;padding:7px 11px;font-size:13px;font-weight:700}.list{display:grid;gap:12px}.card{background:#fff;border:1px solid #e2e6ee;border-radius:18px;padding:17px;box-shadow:0 5px 18px rgba(24,34,52,.05)}.top{display:flex;justify-content:space-between;gap:12px}.mode{font-size:13px;font-weight:800;color:#59657b}.badge{font-size:12px;font-weight:800;padding:5px 9px;border-radius:999px;white-space:nowrap}.available{background:#e8f7ef;color:#137a49}.changed{background:#eef3ff;color:#315fc4}.up{background:#fff4de;color:#9b5d00}.wait{background:#f1efff;color:#6552bb}.route{font-size:21px;font-weight:850;margin:8px 0 2px}.when{font-size:15px;color:#536078;font-weight:700}.train{margin:8px 0 0;color:#6a7488;font-size:13px}.change{margin-top:15px;padding:12px 13px;background:#f6f8fb;border-radius:12px;font-size:15px;font-weight:800}.search-window{margin-top:9px;color:#526078;font-size:12px;font-weight:700}.book{display:block;width:100%;text-align:center;text-decoration:none;background:#19233a;color:#fff;border:0;border-radius:12px;padding:11px 14px;font:inherit;font-weight:800;margin-top:14px;cursor:pointer}.book:active{transform:translateY(1px)}.book-note{margin:7px 2px 0;color:#7b8497;font-size:11px;text-align:center}.book-note.warn{color:#a14d1f;font-weight:700}.privacy{margin-top:24px;color:#7b8497;font-size:12px}.empty{background:#fff;border:1px solid #e2e6ee;border-radius:18px;padding:28px 20px;text-align:center;color:#657087}
 </style>
 </head>
 <body>
@@ -18,10 +18,20 @@
 <p class="privacy">알림 데이터는 서버에 저장하지 않고, 카카오 링크의 # 뒤 데이터를 현재 브라우저에서만 읽어 표시합니다.</p>
 </main>
 <script>
-const TMONEYGO_PLAY="https://play.google.com/store/apps/details?id=kr.co.tmoney.tia";
 const TMONEYGO_APPSTORE="https://apps.apple.com/kr/app/id1483433931";
 const TMONEYGO_WEB="https://www.tmoneymobility.co.kr/sub/business/tmoneygo.html";
-function payload(){const p=new URLSearchParams(location.hash.slice(1));const v=p.get("d");if(!v)return[];try{const b=v.replace(/-/g,"+").replace(/_/g,"/")+"=".repeat((4-v.length%4)%4);const bytes=Uint8Array.from(atob(b),c=>c.charCodeAt(0));const data=JSON.parse(new TextDecoder().decode(bytes));return Array.isArray(data)?data:[]}catch{return[]}}
+
+function payload(){
+  const p=new URLSearchParams(location.hash.slice(1));
+  const v=p.get("d");
+  if(!v)return[];
+  try{
+    const b=v.replace(/-/g,"+").replace(/_/g,"/")+"=".repeat((4-v.length%4)%4);
+    const bytes=Uint8Array.from(atob(b),c=>c.charCodeAt(0));
+    const data=JSON.parse(new TextDecoder().decode(bytes));
+    return Array.isArray(data)?data:[];
+  }catch{return[]}
+}
 function cls(t){return t==="예약 가능"?"available":t==="좌석 품질 상승"?"up":t==="예약대기"?"wait":"changed"}
 function date(v){return v&&v.length>=8?`${v.slice(4,6)}/${v.slice(6,8)}`:(v||"")}
 function time(v){return v&&v.length>=4?`${v.slice(0,2)}:${v.slice(2,4)}`:(v||"")}
@@ -31,18 +41,111 @@ function isIOS(){return /iPhone|iPad|iPod/i.test(navigator.userAgent)}
 function isKakaoTalk(){return /KAKAOTALK/i.test(navigator.userAgent)}
 function endpoints(e){if(e.departure&&e.arrival)return[e.departure,e.arrival];const p=(e.route||"").split("→");return[p[0]||"",p[1]||""]}
 function nearbyStart(v){const h=parseInt((v||"0000").slice(0,2),10)||0,m=parseInt((v||"0000").slice(2,4),10)||0;let n=Math.max(0,h*60+m-60);n=Math.floor(n/10)*10;return`${String(Math.floor(n/60)).padStart(2,"0")}${String(n%60).padStart(2,"0")}00`}
-function korailWeb(e){const[dep,arr]=endpoints(e);const q=new URLSearchParams({txtGoAbrdDt:e.date||"",txtGoHour:nearbyStart(e.departure_time),txtGoStart:dep,txtGoEnd:arr,selGoTrain:"05",radJobId:"1",txtGoPage:"1",hidRsvTpCd:"03",txtPsgFlg_1:"1",txtSeatAttCd_4:"015",txtSeatAttCd_3:"000",txtSeatAttCd_2:"000",adjcCheckYn:"N",checkStnNm:"Y"});return`https://www.letskorail.com/ebizprd/EbizPrdTicketPr21111_i1.do?${q}`}
-function korailScheme(e){const q=new URLSearchParams({view:"booking"});if(e.departure_code)q.set("srtDep",e.departure_code);if(e.arrival_code)q.set("srtArv",e.arrival_code);if(e.date)q.set("srtDt",e.date);q.set("srtTm",nearbyStart(e.departure_time));return`korailtalk://navigation?${q}`}
-function korailAndroidIntent(e){const q=new URLSearchParams({view:"booking"});if(e.departure_code)q.set("srtDep",e.departure_code);if(e.arrival_code)q.set("srtArv",e.arrival_code);if(e.date)q.set("srtDt",e.date);q.set("srtTm",nearbyStart(e.departure_time));return`intent://navigation?${q}#Intent;scheme=korailtalk;package=com.korail.talk;S.browser_fallback_url=${encodeURIComponent(korailWeb(e))};end`}
-function launchSchemeWithFallback(scheme,web){let left=false;const mark=()=>{if(document.hidden)left=true};document.addEventListener("visibilitychange",mark,{once:true});location.href=scheme;setTimeout(()=>{if(!left&&!document.hidden)location.href=web},1300)}
-function busQueryText(e){const[dep,arr]=endpoints(e);return`${dep} → ${arr} | ${date(e.date)} | ${time(nearbyStart(e.departure_time))} 이후`}
-async function copyBusQuery(e){try{await navigator.clipboard.writeText(busQueryText(e))}catch{}}
-async function openTmoneyGo(e){await copyBusQuery(e);if(isAndroid()){location.href=`intent://#Intent;package=kr.co.tmoney.tia;action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;S.browser_fallback_url=${encodeURIComponent(TMONEYGO_PLAY)};end`;return}if(isIOS()){location.href=TMONEYGO_APPSTORE;return}location.href=TMONEYGO_WEB}
-function bookingLabel(e){if(e.transport==="기차")return isAndroid()||isIOS()?"코레일+에서 이 시간대 조회":"코레일에서 이 시간대 조회";return"티머니GO에서 이 시간대 조회"}
-function bookingNote(e){if(e.transport==="기차")return`조회 시작 ${time(nearbyStart(e.departure_time))} · 알림 편 ${time(e.departure_time)}`;return`조회 조건 자동 복사 · ${busQueryText(e)}`}
-function openBooking(e){if(e.transport==="기차"){const web=korailWeb(e),scheme=korailScheme(e);if(isAndroid()){if(isKakaoTalk())launchSchemeWithFallback(scheme,web);else location.href=korailAndroidIntent(e);return}if(isIOS()){launchSchemeWithFallback(scheme,web);return}location.href=web;return}openTmoneyGo(e)}
+
+function korailWeb(e){
+  const[dep,arr]=endpoints(e);
+  const q=new URLSearchParams({txtGoAbrdDt:e.date||"",txtGoHour:nearbyStart(e.departure_time),txtGoStart:dep,txtGoEnd:arr,selGoTrain:"05",radJobId:"1",txtGoPage:"1",hidRsvTpCd:"03",txtPsgFlg_1:"1",txtSeatAttCd_4:"015",txtSeatAttCd_3:"000",txtSeatAttCd_2:"000",adjcCheckYn:"N",checkStnNm:"Y"});
+  return`https://www.letskorail.com/ebizprd/EbizPrdTicketPr21111_i1.do?${q}`
+}
+function korailScheme(e){
+  const q=new URLSearchParams({view:"booking"});
+  if(e.departure_code)q.set("srtDep",e.departure_code);
+  if(e.arrival_code)q.set("srtArv",e.arrival_code);
+  if(e.date)q.set("srtDt",e.date);
+  q.set("srtTm",nearbyStart(e.departure_time));
+  return`korailtalk://navigation?${q}`
+}
+function korailAndroidIntent(e){
+  const q=new URLSearchParams({view:"booking"});
+  if(e.departure_code)q.set("srtDep",e.departure_code);
+  if(e.arrival_code)q.set("srtArv",e.arrival_code);
+  if(e.date)q.set("srtDt",e.date);
+  q.set("srtTm",nearbyStart(e.departure_time));
+  return`intent://navigation?${q}#Intent;scheme=korailtalk;package=com.korail.talk;S.browser_fallback_url=${encodeURIComponent(korailWeb(e))};end`
+}
+function launchSchemeWithFallback(scheme,web){
+  let left=false;
+  const mark=()=>{if(document.hidden)left=true};
+  document.addEventListener("visibilitychange",mark,{once:true});
+  location.href=scheme;
+  setTimeout(()=>{if(!left&&!document.hidden)location.href=web},1300)
+}
+
+function busQueryText(e){
+  const[dep,arr]=endpoints(e);
+  return`${dep} → ${arr} | ${date(e.date)} | ${time(nearbyStart(e.departure_time))} 이후`
+}
+function copyBusQueryNow(e){
+  if(!navigator.clipboard||!navigator.clipboard.writeText)return;
+  const task=navigator.clipboard.writeText(busQueryText(e));
+  if(task&&typeof task.catch==="function")task.catch(()=>{});
+}
+function showTmoneyLaunchFailure(index,e){
+  const note=document.querySelector(`[data-bus-note="${index}"]`);
+  if(!note)return;
+  note.classList.add("warn");
+  note.textContent=`티머니GO 자동 실행이 브라우저에서 차단됐습니다. 앱을 직접 열어주세요. 검색조건은 복사했습니다: ${busQueryText(e)}`;
+}
+function openTmoneyGo(e,index){
+  // 외부 앱 실행은 반드시 버튼 클릭의 user gesture 안에서 즉시 시도한다.
+  // clipboard Promise를 await하면 Chrome/Kakao WebView가 intent를 비사용자 동작으로 판단할 수 있다.
+  copyBusQueryNow(e);
+  if(isAndroid()){
+    let left=false;
+    const mark=()=>{if(document.hidden)left=true};
+    document.addEventListener("visibilitychange",mark,{once:true});
+    location.href="intent:#Intent;package=kr.co.tmoney.tia;action=android.intent.action.MAIN;category=android.intent.category.LAUNCHER;end";
+    setTimeout(()=>{if(!left&&!document.hidden)showTmoneyLaunchFailure(index,e)},1300);
+    return;
+  }
+  if(isIOS()){
+    location.href=TMONEYGO_APPSTORE;
+    return;
+  }
+  location.href=TMONEYGO_WEB;
+}
+function bookingLabel(e){
+  if(e.transport==="기차")return isAndroid()||isIOS()?"코레일+에서 이 시간대 조회":"코레일에서 이 시간대 조회";
+  return"티머니GO 앱에서 이 시간대 조회"
+}
+function bookingNote(e){
+  if(e.transport==="기차")return`조회 시작 ${time(nearbyStart(e.departure_time))} · 알림 편 ${time(e.departure_time)}`;
+  return`조회 조건 자동 복사 · ${busQueryText(e)}`
+}
+function openBooking(e,index){
+  if(e.transport==="기차"){
+    const web=korailWeb(e),scheme=korailScheme(e);
+    if(isAndroid()){
+      if(isKakaoTalk())launchSchemeWithFallback(scheme,web);
+      else location.href=korailAndroidIntent(e);
+      return;
+    }
+    if(isIOS()){
+      launchSchemeWithFallback(scheme,web);
+      return;
+    }
+    location.href=web;
+    return;
+  }
+  openTmoneyGo(e,index)
+}
+
 const events=payload(),list=document.getElementById("list"),summary=document.getElementById("summary");
-if(!events.length){list.innerHTML='<div class="empty"><strong>표시할 알림 정보가 없습니다.</strong><br>SeatWatcher 카카오 알림의 <b>예매 확인</b> 버튼으로 열어주세요.</div>'}else{const rail=events.filter(e=>e.transport==="기차").length,bus=events.filter(e=>e.transport==="버스").length;summary.innerHTML=`<span class="pill">전체 ${events.length}건</span>${rail?`<span class="pill">🚄 기차 ${rail}</span>`:""}${bus?`<span class="pill">🚌 버스 ${bus}</span>`:""}`;list.innerHTML=events.map((e,i)=>{const mode=e.transport==="기차"?"🚄 기차":"🚌 버스",note=bookingNote(e);return`<article class="card"><div class="top"><div class="mode">${mode} · ${esc(e.provider)}</div><span class="badge ${cls(e.alert_type)}">${esc(e.alert_type)}</span></div><div class="route">${esc(e.route)}</div><div class="when">${esc(date(e.date))} · ${esc(time(e.departure_time))}</div>${e.title?`<div class="train">${esc(e.title)}</div>`:""}<div class="change">${esc(e.change||e.current)}</div><div class="search-window">${esc(note)}</div><button class="book" type="button" data-index="${i}">${esc(bookingLabel(e))}</button>${e.transport==="버스"?'<div class="book-note">티머니GO 외부 검색조건 딥링크 규격은 공개 확인되지 않아 앱을 열고 검색조건을 클립보드에 넣습니다.</div>':""}</article>`}).join("");document.querySelectorAll(".book").forEach(button=>button.addEventListener("click",()=>openBooking(events[Number(button.dataset.index)])))}
+if(!events.length){
+  list.innerHTML='<div class="empty"><strong>표시할 알림 정보가 없습니다.</strong><br>SeatWatcher 카카오 알림의 <b>예매 확인</b> 버튼으로 열어주세요.</div>'
+}else{
+  const rail=events.filter(e=>e.transport==="기차").length,bus=events.filter(e=>e.transport==="버스").length;
+  summary.innerHTML=`<span class="pill">전체 ${events.length}건</span>${rail?`<span class="pill">🚄 기차 ${rail}</span>`:""}${bus?`<span class="pill">🚌 버스 ${bus}</span>`:""}`;
+  list.innerHTML=events.map((e,i)=>{
+    const mode=e.transport==="기차"?"🚄 기차":"🚌 버스",note=bookingNote(e);
+    const busNote=e.transport==="버스"?`<div class="book-note" data-bus-note="${i}">설치된 티머니GO 실행을 우선합니다. Play Store로 자동 이동하지 않습니다.</div>`:"";
+    return`<article class="card"><div class="top"><div class="mode">${mode} · ${esc(e.provider)}</div><span class="badge ${cls(e.alert_type)}">${esc(e.alert_type)}</span></div><div class="route">${esc(e.route)}</div><div class="when">${esc(date(e.date))} · ${esc(time(e.departure_time))}</div>${e.title?`<div class="train">${esc(e.title)}</div>`:""}<div class="change">${esc(e.change||e.current)}</div><div class="search-window">${esc(note)}</div><button class="book" type="button" data-index="${i}">${esc(bookingLabel(e))}</button>${busNote}</article>`
+  }).join("");
+  document.querySelectorAll(".book").forEach(button=>button.addEventListener("click",()=>{
+    const index=Number(button.dataset.index);
+    openBooking(events[index],index)
+  }))
+}
 </script>
 </body>
 </html>
