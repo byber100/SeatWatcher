@@ -24,6 +24,8 @@ class RailCandidate:
     seat_text: str
     first_availability_rank: int = 0
     second_availability_rank: int = 0
+    departure_station_code: str = ""
+    arrival_station_code: str = ""
 
 
 @dataclass
@@ -409,6 +411,8 @@ def _direct(
                     ", ".join(labels) if labels else "예약대기 가능",
                     _availability_rank(train) if labels else 0,
                     0,
+                    str(getattr(train, "departure_station_code", "") or "").strip(),
+                    str(getattr(train, "arrival_station_code", "") or "").strip(),
                 )
             )
 
@@ -568,6 +572,8 @@ def _transfer(
                     availability_text,
                     _availability_rank(first),
                     _availability_rank(second),
+                    str(getattr(first, "departure_station_code", "") or "").strip(),
+                    str(getattr(second, "arrival_station_code", "") or "").strip(),
                 )
             )
 

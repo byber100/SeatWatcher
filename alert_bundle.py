@@ -18,6 +18,10 @@ class AlertEvent:
     provider: str
     date: str
     departure_time: str
+    departure: str
+    arrival: str
+    departure_code: str
+    arrival_code: str
     route: str
     title: str
     current: str
@@ -70,6 +74,10 @@ def build_bus_event(*, key: str, item: Any, alert_type: str, previous_signature:
         provider=provider,
         date=str(getattr(item, "date", "") or ""),
         departure_time=str(getattr(item, "departure_time", "") or ""),
+        departure=str(getattr(item, "departure_terminal", "") or ""),
+        arrival=str(getattr(item, "arrival_terminal", "") or ""),
+        departure_code="",
+        arrival_code="",
         route=f"{getattr(item, 'departure_terminal', '')}→{getattr(item, 'arrival_terminal', '')}",
         title=detail,
         current=current,
@@ -91,6 +99,10 @@ def build_rail_event(*, key: str, item: Any, alert_type: str, previous_signature
         provider="KORAIL",
         date=str(getattr(item, "date", "") or ""),
         departure_time=str(getattr(item, "departure_time", "") or ""),
+        departure=str(getattr(item, "departure_station", "") or ""),
+        arrival=str(getattr(item, "arrival_station", "") or ""),
+        departure_code=str(getattr(item, "departure_station_code", "") or ""),
+        arrival_code=str(getattr(item, "arrival_station_code", "") or ""),
         route=f"{getattr(item, 'departure_station', '')}→{getattr(item, 'arrival_station', '')}",
         title=title,
         current=current,
@@ -145,6 +157,10 @@ def demo_alert_events() -> list[AlertEvent]:
             provider="KORAIL",
             date="20991231",
             departure_time="123400",
+            departure="테스트역A",
+            arrival="테스트역B",
+            departure_code="",
+            arrival_code="",
             route="테스트역A→테스트역B",
             title="직통 · KTX 테스트 데이터",
             current="일반실 1석",
@@ -157,6 +173,10 @@ def demo_alert_events() -> list[AlertEvent]:
             provider="KOBUS",
             date="20991231",
             departure_time="130000",
+            departure="테스트터미널A",
+            arrival="테스트터미널B",
+            departure_code="",
+            arrival_code="",
             route="테스트터미널A→테스트터미널B",
             title="고속버스 테스트 데이터",
             current="잔여 2석",

@@ -6,6 +6,7 @@ import os
 import subprocess
 import sys
 import time
+from datetime import datetime, timedelta, timezone
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from pathlib import Path
@@ -61,6 +62,47 @@ def load_json(path: Path, default: dict | None = None) -> dict:
 def load_config() -> dict:
     path = LOCAL_CONFIG if LOCAL_CONFIG.exists() else PUBLIC_CONFIG
     return load_json(path)
+
+
+def expand_rail_targets_for_wide_test(config: dict) -> dict:
+    """Add a temporary high-turnover KORAIL test scope without modifying the saved config."""
+    original_targets = list(config.get("rail_targets", []))
+    if not original_targets:
+        print("RAIL_TEST_SCOPE skipped=no_rail_targets")
+        return config
+
+    preferred_pair = ("서울", "동대구")
+    pairs = [preferred_pair, (preferred_pair[1], preferred_pair[0])]
+
+    kst = timezone(timedelta(hours=9))
+    today = datetime.now(kst).date()
+    dates = [
+        (today + timedelta(days=1)).strftime("%Y%m%d"),
+        (today + timedelta(days=2)).strftime("%Y%m%d"),
+    ]
+
+    extras: list[dict] = []
+    for pair_index, (departure, arrival) in enumerate(pairs, start=1):
+        for date_text in dates:
+            extras.append(
+                {
+                    "id": f"rail-wide-test-{date_text}-{pair_index}",
+                    "date": date_text,
+                    "departure": departure,
+                    "arrival": arrival,
+                    "start": "050000",
+                    "end": "235900",
+                }
+            )
+
+    expanded = dict(config)
+    expanded["rail_targets"] = original_targets + extras
+    print(
+        "RAIL_TEST_SCOPE "
+        f"expanded={len(extras)} dates={','.join(dates)} "
+        "routes=서울-동대구,동대구-서울 window=050000-235900"
+    )
+    return expanded
 
 
 def bus_key(target_id: str, item: BusCandidate) -> str:
@@ -518,6 +560,11 @@ def main() -> int:
     parser.add_argument("--notify", action="store_true", help="새 후보를 카카오로 알림")
     parser.add_argument("--rail-debug", action="store_true", help="KORAIL 상세 진단 로그 표시")
     parser.add_argument("--test-alert", action="store_true", help="실제 조회 없이 Kakao 묶음 알림/Pages 링크 테스트")
+    parser.add_argument(
+        "--wide-rail-test",
+        action="store_true",
+        help="저장 설정은 건드리지 않고 KORAIL 테스트 날짜/시간 범위를 임시 확대",
+    )
     args = parser.parse_args()
     if args.test_alert:
         page_url = send_alert_batch(demo_alert_events())
@@ -525,6 +572,8 @@ def main() -> int:
         print(f"DETAIL_PAGE {page_url}")
         return 0
     config = load_config()
+    if args.wide_rail_test:
+        config = expand_rail_targets_for_wide_test(config)
     interval = max(60, int(config.get("poll_interval_seconds", 120)))
     while True:
         cycle_started = time.perf_counter()
