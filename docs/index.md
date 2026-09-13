@@ -1,0 +1,60 @@
+---
+title: SeatWatcher 예매 확인
+---
+
+<style>
+:root{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;color:#172033;background:#f4f6fa;line-height:1.45}
+*{box-sizing:border-box}body{margin:0;background:#f4f6fa}main{max-width:720px;margin:0 auto;padding:24px 16px 48px}.hero{padding:18px 4px 14px}.eyebrow{font-size:13px;font-weight:800;color:#67728a;letter-spacing:.04em}h1{margin:6px 0;font-size:28px}.sub{margin:0;color:#6a7488;font-size:14px}.summary{display:flex;gap:8px;flex-wrap:wrap;margin:14px 0 20px}.pill{background:#fff;border:1px solid #e1e5ec;border-radius:999px;padding:7px 11px;font-size:13px;font-weight:700}.list{display:grid;gap:12px}.card{background:#fff;border:1px solid #e2e6ee;border-radius:18px;padding:17px;box-shadow:0 5px 18px rgba(24,34,52,.05)}.top{display:flex;justify-content:space-between;gap:12px}.mode{font-size:13px;font-weight:800;color:#59657b}.badge{font-size:12px;font-weight:800;padding:5px 9px;border-radius:999px;white-space:nowrap}.available{background:#e8f7ef;color:#137a49}.changed{background:#eef3ff;color:#315fc4}.up{background:#fff4de;color:#9b5d00}.wait{background:#f1efff;color:#6552bb}.route{font-size:21px;font-weight:850;margin:8px 0 2px}.when{font-size:15px;color:#536078;font-weight:700}.train{margin:8px 0 0;color:#6a7488;font-size:13px}.change{margin-top:15px;padding:12px 13px;background:#f6f8fb;border-radius:12px;font-size:15px;font-weight:800}.book{display:block;text-align:center;text-decoration:none;background:#19233a;color:#fff!important;border-radius:12px;padding:11px 14px;font-weight:800;margin-top:14px}.privacy{margin-top:24px;color:#7b8497;font-size:12px}.empty{background:#fff;border:1px solid #e2e6ee;border-radius:18px;padding:28px 20px;text-align:center;color:#657087}
+</style>
+
+<main>
+<section class="hero"><div class="eyebrow">SEATWATCHER</div><h1>예매 가능한 변동</h1><p class="sub">매진은 제외하고 실제 예매 가능한 좌석 변동만 표시합니다.</p></section>
+<div id="summary" class="summary"></div>
+<section id="list" class="list"></section>
+<p class="privacy">알림 데이터는 서버에 저장하지 않고, 카카오 링크의 # 뒤 데이터를 현재 브라우저에서만 읽어 표시합니다.</p>
+</main>
+
+<script>
+const booking={
+  KORAIL:["코레일 예매","https://korail.go.kr/ticket/"],
+  KOBUS:["고속버스 예매","https://www.kobus.co.kr/"],
+  TMONEY_INTERCITY:["시외버스 예매","https://intercitybus.tmoney.co.kr/"],
+  BUSTAGO:["버스타고 예매","https://www.bustago.or.kr/"]
+};
+</script>
+
+<script>
+function payload(){
+  const p=new URLSearchParams(location.hash.slice(1));
+  const v=p.get("d");
+  if(!v)return[];
+  try{
+    const b=v.replace(/-/g,"+").replace(/_/g,"/")+"=".repeat((4-v.length%4)%4);
+    const bytes=Uint8Array.from(atob(b),c=>c.charCodeAt(0));
+    const data=JSON.parse(new TextDecoder().decode(bytes));
+    return Array.isArray(data)?data:[];
+  }catch{return[]}
+}
+function cls(t){return t==="예약 가능"?"available":t==="좌석 품질 상승"?"up":t==="예약대기"?"wait":"changed"}
+function date(v){return v&&v.length>=8?`${v.slice(4,6)}/${v.slice(6,8)}`:(v||"")}
+function time(v){return v&&v.length>=4?`${v.slice(0,2)}:${v.slice(2,4)}`:(v||"")}
+function esc(v){const d=document.createElement("div");d.textContent=v||"";return d.innerHTML}
+</script>
+
+<script>
+const events=payload();
+const list=document.getElementById("list");
+const summary=document.getElementById("summary");
+if(!events.length){
+  list.innerHTML='<div class="empty"><strong>표시할 알림 정보가 없습니다.</strong><br>SeatWatcher 카카오 알림의 <b>예매 확인</b> 버튼으로 열어주세요.</div>';
+}else{
+  const rail=events.filter(e=>e.transport==="기차").length;
+  const bus=events.filter(e=>e.transport==="버스").length;
+  summary.innerHTML=`<span class="pill">전체 ${events.length}건</span>${rail?`<span class="pill">🚄 기차 ${rail}</span>`:""}${bus?`<span class="pill">🚌 버스 ${bus}</span>`:""}`;
+  list.innerHTML=events.map(e=>{
+    const b=booking[e.provider]||["예매 사이트","#"];
+    const mode=e.transport==="기차"?"🚄 기차":"🚌 버스";
+    return `<article class="card"><div class="top"><div class="mode">${mode} · ${esc(e.provider)}</div><span class="badge ${cls(e.alert_type)}">${esc(e.alert_type)}</span></div><div class="route">${esc(e.route)}</div><div class="when">${esc(date(e.date))} · ${esc(time(e.departure_time))}</div>${e.title?`<div class="train">${esc(e.title)}</div>`:""}<div class="change">${esc(e.change||e.current)}</div><a class="book" href="${b[1]}" target="_blank" rel="noopener noreferrer">${b[0]}</a></article>`;
+  }).join("");
+}
+</script>

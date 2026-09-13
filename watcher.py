@@ -36,6 +36,7 @@ def _ensure_project_python() -> None:
 
 _ensure_project_python()
 
+from alert_bundle import AlertEvent, build_bus_event, build_rail_event, send_alert_batch
 from bus_providers import BusCandidate, search_user_bus_routes
 from env_loader import load_project_env
 from last_mile import bus_last_mile, rail_last_mile
@@ -137,22 +138,6 @@ def save_state(
     )
 
 
-def send_message(text: str) -> None:
-    from kakao_notify import send_to_me
-    send_to_me(text)
-
-
-def bus_message(item: BusCandidate, last_mile: str, alert_type: str) -> str:
-    seats = f"잔여 {item.remaining_seats}석" if item.remaining_seats is not None else "좌석 가능"
-    schedule = f" {item.schedule_type}" if item.schedule_type else ""
-    return (
-        f"[SeatWatcher][{alert_type}][버스] {item.date[4:6]}/{item.date[6:8]} "
-        f"{item.departure_time[:2]}:{item.departure_time[2:4]} "
-        f"{item.departure_terminal}→{item.arrival_terminal} {item.provider}{schedule} {seats}. "
-        f"{last_mile}"
-    )
-
-
 def rail_alert_type(
     item: object,
     previous_signature: str | None,
@@ -172,16 +157,6 @@ def rail_alert_type(
     if previous_quality is not None and quality > previous_quality:
         return "좌석 품질 상승"
     return "좌석 변동"
-
-
-def rail_message(item: object, last_mile: str, alert_type: str) -> str:
-    kind_text = "직통" if item.kind == "DIRECT" else "환승"
-    return (
-        f"[SeatWatcher][{alert_type}][기차 {kind_text}] {item.date[4:6]}/{item.date[6:8]} "
-        f"{item.departure_time[:2]}:{item.departure_time[2:4]} "
-        f"{item.departure_station}→{item.arrival_station} {item.train_text} "
-        f"{item.seat_text}. {last_mile}"
-    )
 
 
 def collect_bus(config: dict) -> list[tuple[dict, list[BusCandidate]]]:
@@ -270,19 +245,6 @@ def collect_rail(
         return [], set()
 
 
-def notify_new(item_key: str, text: str, notify: bool, sent: set[str]) -> bool:
-    if not notify:
-        return False
-    try:
-        send_message(text)
-    except Exception as exc:
-        print(f"WARNING kakao={item_key}: {exc}")
-        return False
-    sent.add(item_key)
-    print("KAKAO_SENT", item_key)
-    return True
-
-
 def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
     cycle_started = time.perf_counter()
     state = load_json(
@@ -313,6 +275,7 @@ def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
     current_rail_quality = dict(previous_rail_quality)
     alertable_now: set[str] = set()
     sent: set[str] = set()
+    pending_events: list[AlertEvent] = []
 
     # 버스와 철도는 서로 다른 서비스이므로 네트워크 대기를 겹쳐도
     # 동일 공급자에 대한 요청 빈도는 늘지 않는다.
@@ -391,14 +354,14 @@ def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
             if alert_type is not None:
                 marker = "NEW" if alert_type == "예약 가능" else "CHANGED"
                 print(f"    + {marker} | {availability} | {reason}")
-                delivered = notify_new(
-                    item_key,
-                    bus_message(item, reason, alert_type),
-                    notify,
-                    sent,
+                pending_events.append(
+                    build_bus_event(
+                        key=item_key,
+                        item=item,
+                        alert_type=alert_type,
+                        previous_signature=previous_signature,
+                    )
                 )
-                if notify and not delivered:
-                    continue
             current_bus_availability[item_key] = current_signature
 
         print(f"  -> 완료 | 배차 {len(items)}편 | 현재 예약 가능 {available_count}편")
@@ -466,14 +429,14 @@ def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
         alertable_now.add(item_key)
         if should_alert:
             print(f"    + {alert_type} | {item.seat_text}")
-            delivered = notify_new(
-                item_key,
-                rail_message(item, reason, alert_type),
-                notify,
-                sent,
+            pending_events.append(
+                build_rail_event(
+                    key=item_key,
+                    item=item,
+                    alert_type=alert_type,
+                    previous_signature=previous_signature,
+                )
             )
-            if notify and not delivered:
-                continue
         current_rail_availability[item_key] = current_signature
         current_rail_quality[item_key] = quality
 
@@ -487,6 +450,30 @@ def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
             continue
         current_rail_availability[item_key] = UNAVAILABLE_SIGNATURE
         current_rail_quality.pop(item_key, None)
+
+    if notify and pending_events:
+        try:
+            send_alert_batch(pending_events)
+        except Exception as exc:
+            print(f"WARNING kakao_bundle count={len(pending_events)}: {exc}")
+            for event in pending_events:
+                if event.transport == "버스":
+                    if event.key in previous_bus_availability:
+                        current_bus_availability[event.key] = previous_bus_availability[event.key]
+                    else:
+                        current_bus_availability.pop(event.key, None)
+                else:
+                    if event.key in previous_rail_availability:
+                        current_rail_availability[event.key] = previous_rail_availability[event.key]
+                    else:
+                        current_rail_availability.pop(event.key, None)
+                    if event.key in previous_rail_quality:
+                        current_rail_quality[event.key] = previous_rail_quality[event.key]
+                    else:
+                        current_rail_quality.pop(event.key, None)
+        else:
+            sent.update(event.key for event in pending_events)
+            print(f"KAKAO_SENT_BUNDLE count={len(pending_events)}")
 
     if notify:
         active_bus_ids = {str(target["id"]) for target in config.get("bus_targets", [])}

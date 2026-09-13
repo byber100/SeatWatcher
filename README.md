@@ -23,7 +23,9 @@
   - 직통 좌석 유무와 관계없이 환승 시간표를 계속 조회
   - 필요할 때 이용 가능한 환승을 알림 후보로 승격
 - **Kakao 알림 연동**
-  - 선택적으로 Kakao 메시지 알림 사용 가능
+  - 같은 polling cycle의 여러 변동을 한 메시지로 묶어 전송
+  - 메시지에는 핵심 1~2건만 간단히 표시하고 `예매 확인` 버튼에서 전체 상세 확인
+  - 상세 화면에서 코레일·고속버스·시외버스·버스타고 공식 예매 사이트로 이동
 - **상세 터미널 출력**
   - 실제 조회 과정과 운행 후보를 디버깅하기 쉽게 자세히 표시
 
@@ -34,7 +36,39 @@
 3. SeatWatcher가 각 공급자의 운행 정보와 현재 좌석 상태를 반복 조회합니다.
 4. 이용 가능한 새 후보와 같은 편의 잔여석·예매 가능 형태 변동을 판정합니다.
 5. 매진 전환은 알리지 않고, 현재 예매 가능한 상태가 새로 생기거나 변했을 때 설정한 경우 Kakao로 알립니다.
-6. 이후에도 상태를 계속 저장해 같은 내용의 불필요한 반복 알림을 막고 재오픈을 감지합니다.
+6. 같은 cycle의 변동은 Kakao 메시지 하나로 묶고, `예매 확인` 버튼은 GitHub Pages의 상세 화면으로 연결합니다.
+7. 이후에도 상태를 계속 저장해 같은 내용의 불필요한 반복 알림을 막고 재오픈을 감지합니다.
+
+## PC 없이 자동 감지
+
+최종 운영은 개인 PC를 켜 두는 방식이 아니라 **클라우드 Linux VM에서 SeatWatcher를 백그라운드 서비스로 실행**하는 구조입니다. VM은 웹서버로 공개하지 않고 KORAIL/버스 조회와 Kakao 발송만 수행합니다. 상세 웹 화면은 GitHub Pages가 담당합니다.
+
+권장 무료 운영 기준은 **Oracle Cloud Infrastructure Always Free Compute**입니다. Ubuntu 24.04 이상에서 `VM.Standard.A1.Flex` 1 OCPU / 1 GB 또는 계정에 표시되는 Always Free x86 micro를 사용하고 저장소를 clone한 뒤 비공개 운영 파일을 직접 복사합니다. Oracle은 유휴 Always Free VM을 회수할 수 있으므로 절대적 SLA로 보지는 않습니다.
+
+```text
+.env.local
+watch_targets.local.json
+.runtime/kakao_tokens.json
+# 기존 로컬 상태를 그대로 이어갈 때만 선택적으로 복사
+.runtime/watch_state.json
+```
+
+그 다음 VM의 저장소 루트에서 실행합니다.
+
+```bash
+python3 deploy/cloud_vm_manage.py install
+```
+
+상태/로그 확인은 다음 명령을 사용합니다.
+
+```bash
+python3 deploy/cloud_vm_manage.py status
+python3 deploy/cloud_vm_manage.py logs
+```
+
+서비스는 부팅 시 자동 시작되고 비정상 종료 시 자동 재시작됩니다. 애플리케이션용 인바운드 포트나 별도 웹서버는 필요하지 않습니다.
+
+GitHub Pages는 저장소 `Settings > Pages`에서 `Deploy from a branch`, `main`, `/docs`를 한 번 지정하면 됩니다. 알림 상세 화면 주소는 기본적으로 `https://byber100.github.io/SeatWatcher/`를 사용합니다. Kakao Developers의 제품 링크 Web 도메인에도 `https://byber100.github.io`를 추가해야 `예매 확인` 버튼이 정상 이동합니다.
 
 ## 빠른 시작
 
@@ -95,8 +129,8 @@ Kakao 알림까지 사용하려면:
 git pull --ff-only
 → 로컬 수정
 → Python/JSON/보안 검증
-→ git commit
-→ git push origin main
+→ 로컬 git commit
+→ 사용자가 원격 반영을 지시한 경우에만 git push origin main
 ```
 
 실제 인증정보, 개인 이동 일정, 런타임 상태는 이 흐름에 포함하지 않습니다.
@@ -105,6 +139,7 @@ git pull --ff-only
 
 ```text
 watcher.py                 반복 감시 실행기 / 상태 관리
+alert_bundle.py            cycle 단위 묶음 알림 / Pages 링크 생성
 seatwatcher.py             단일 조회 CLI
 rail_provider.py           KORAIL 직통·환승 조회
 bus_providers.py           KOBUS·티머니·버스타고 조회
@@ -113,7 +148,8 @@ kakao_notify.py            Kakao 알림 연동
 env_loader.py              로컬 환경변수 로딩
 watch_targets.json         공개 기본 감시 설정
 watch_targets.local.json   실제 개인 감시 설정, Git 제외
-docs/                      개발 중 요구사항·판정 기준·작업 합의를 관리하는 협업 문서
+docs/                      개발 협업 문서 + GitHub Pages 상세 화면(index.md)
+deploy/cloud_vm_manage.py  Linux VM 설치 / systemd 서비스 관리
 ```
 
 `docs/`는 프로젝트를 외부에 소개하기 위한 문서가 아니라, 개발 과정에서 요구사항과 구현 판단을 맞추기 위한 작업 공간입니다. 프로젝트 소개와 사용 안내는 이 README를 기준으로 합니다.
