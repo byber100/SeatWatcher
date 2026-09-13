@@ -124,10 +124,40 @@ def bundle_text(events: list[AlertEvent]) -> str:
     return "\n".join(lines)
 
 
-def send_alert_batch(events: list[AlertEvent]) -> None:
+def send_alert_batch(events: list[AlertEvent]) -> str:
     if not events:
-        return
+        return ""
     from kakao_notify import send_to_me
 
     page_url = build_alert_page_url(events)
     send_to_me(bundle_text(events), link_url=page_url)
+    return page_url
+
+
+def demo_alert_events() -> list[AlertEvent]:
+    return [
+        AlertEvent(
+            key="demo-rail",
+            alert_type="좌석 변동",
+            transport="기차",
+            provider="KORAIL",
+            date="20260923",
+            departure_time="183400",
+            route="서울→동대구",
+            title="직통 · KTX 테스트",
+            current="일반실 1석",
+            change="일반실 3석 → 1석",
+        ),
+        AlertEvent(
+            key="demo-bus",
+            alert_type="예약 가능",
+            transport="버스",
+            provider="KOBUS",
+            date="20260924",
+            departure_time="191000",
+            route="인천→동대구",
+            title="고속버스 테스트",
+            current="잔여 2석",
+            change="매진 → 잔여 2석",
+        ),
+    ]

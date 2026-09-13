@@ -119,6 +119,14 @@ Kakao 알림까지 사용하려면:
 .venv\Scripts\python watcher.py --watch --notify
 ```
 
+실제 좌석 변동을 기다리지 않고 묶음 메시지와 `예매 확인` 링크를 테스트하려면:
+
+```bash
+.venv\Scripts\python watcher.py --test-alert
+```
+
+이 명령은 가짜 기차 1건 + 버스 1건을 Kakao로 한 번 보내고, 버튼 링크를 GitHub Pages 상세 화면으로 생성합니다. 실제 감시 상태 파일은 변경하지 않습니다.
+
 단일 조회 확인에는 `seatwatcher.py`를 사용할 수 있습니다.
 
 ## 개발 Git 흐름

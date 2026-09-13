@@ -36,7 +36,13 @@ def _ensure_project_python() -> None:
 
 _ensure_project_python()
 
-from alert_bundle import AlertEvent, build_bus_event, build_rail_event, send_alert_batch
+from alert_bundle import (
+    AlertEvent,
+    build_bus_event,
+    build_rail_event,
+    demo_alert_events,
+    send_alert_batch,
+)
 from bus_providers import BusCandidate, search_user_bus_routes
 from env_loader import load_project_env
 from last_mile import bus_last_mile, rail_last_mile
@@ -511,7 +517,13 @@ def main() -> int:
     parser.add_argument("--watch", action="store_true", help="설정된 주기로 계속 감시")
     parser.add_argument("--notify", action="store_true", help="새 후보를 카카오로 알림")
     parser.add_argument("--rail-debug", action="store_true", help="KORAIL 상세 진단 로그 표시")
+    parser.add_argument("--test-alert", action="store_true", help="실제 조회 없이 Kakao 묶음 알림/Pages 링크 테스트")
     args = parser.parse_args()
+    if args.test_alert:
+        page_url = send_alert_batch(demo_alert_events())
+        print("KAKAO_TEST_ALERT_SENT")
+        print(f"DETAIL_PAGE {page_url}")
+        return 0
     config = load_config()
     interval = max(60, int(config.get("poll_interval_seconds", 120)))
     while True:
