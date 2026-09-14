@@ -1,6 +1,21 @@
 {
   "poll_interval_seconds": 120,
   "transfer_display_direct_threshold": 3,
+  "notification": {
+    "work_hours": {
+      "timezone": "+09:00",
+      "weekdays": [0, 1, 2, 3, 4],
+      "start": "09:00",
+      "end": "18:00"
+    },
+    "pushover": {
+      "enabled": true,
+      "important_direct_departures": ["수서", "성남"],
+      "work_sound": "vibrate",
+      "off_work_sound": "pushover",
+      "silent_sound": "none"
+    }
+  },
   "bus_targets": [],
   "rail_targets": []
 }

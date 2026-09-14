@@ -4,6 +4,7 @@ import base64
 import json
 import os
 from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
 
@@ -16,6 +17,7 @@ class AlertEvent:
     key: str
     alert_type: str
     transport: str
+    notification_class: str
     provider: str
     date: str
     departure_time: str
@@ -31,6 +33,7 @@ class AlertEvent:
     def page_payload(self) -> dict[str, str]:
         data = asdict(self)
         data.pop("key", None)
+        data.pop("notification_class", None)
         return data
 
     def kakao_item(self) -> dict[str, str]:
@@ -72,6 +75,7 @@ def build_bus_event(*, key: str, item: Any, alert_type: str, previous_signature:
         key=key,
         alert_type=alert_type,
         transport="버스",
+        notification_class="bus",
         provider=provider,
         date=str(getattr(item, "date", "") or ""),
         departure_time=str(getattr(item, "departure_time", "") or ""),
@@ -97,6 +101,7 @@ def build_rail_event(*, key: str, item: Any, alert_type: str, previous_signature
         key=key,
         alert_type=alert_type,
         transport="기차",
+        notification_class="rail_direct" if kind == "직통" else "rail_transfer",
         provider="KORAIL",
         date=str(getattr(item, "date", "") or ""),
         departure_time=str(getattr(item, "departure_time", "") or ""),
@@ -141,13 +146,158 @@ def bundle_text(events: list[AlertEvent]) -> str:
     return "\n".join(lines)
 
 
-def send_alert_batch(events: list[AlertEvent]) -> str:
+def _fixed_timezone(value: str) -> timezone:
+    text = value.strip()
+    if text.upper() in {"UTC", "Z", "+00:00", "-00:00"}:
+        return timezone.utc
+    if len(text) != 6 or text[0] not in "+-" or text[3] != ":":
+        raise ValueError("notification.work_hours.timezone은 +09:00 형식이어야 합니다.")
+    try:
+        hours = int(text[1:3])
+        minutes = int(text[4:6])
+    except ValueError as exc:
+        raise ValueError("notification.work_hours.timezone 형식이 올바르지 않습니다.") from exc
+    if hours > 23 or minutes > 59:
+        raise ValueError("notification.work_hours.timezone 범위가 올바르지 않습니다.")
+    offset = timedelta(hours=hours, minutes=minutes)
+    if text[0] == "-":
+        offset = -offset
+    return timezone(offset)
+
+
+def _clock_minutes(value: str, setting_name: str) -> int:
+    text = value.strip()
+    if len(text) != 5 or text[2] != ":":
+        raise ValueError(f"{setting_name}은 HH:MM 형식이어야 합니다.")
+    try:
+        hour = int(text[:2])
+        minute = int(text[3:])
+    except ValueError as exc:
+        raise ValueError(f"{setting_name} 형식이 올바르지 않습니다.") from exc
+    if hour > 23 or minute > 59:
+        raise ValueError(f"{setting_name} 범위가 올바르지 않습니다.")
+    return hour * 60 + minute
+
+
+def is_work_hours(work_hours: dict[str, Any], *, now: datetime | None = None) -> bool:
+    if not work_hours:
+        raise ValueError("notification.work_hours 설정이 필요합니다.")
+    tz = _fixed_timezone(str(work_hours.get("timezone") or ""))
+    weekdays_raw = work_hours.get("weekdays")
+    if not isinstance(weekdays_raw, list) or not weekdays_raw:
+        raise ValueError("notification.work_hours.weekdays 설정이 필요합니다.")
+    weekdays = {int(value) for value in weekdays_raw}
+    if any(value < 0 or value > 6 for value in weekdays):
+        raise ValueError("notification.work_hours.weekdays는 0(월)~6(일) 범위여야 합니다.")
+    start = _clock_minutes(str(work_hours.get("start") or ""), "notification.work_hours.start")
+    end = _clock_minutes(str(work_hours.get("end") or ""), "notification.work_hours.end")
+    if start == end:
+        raise ValueError("notification.work_hours.start와 end는 달라야 합니다.")
+
+    current = now.astimezone(tz) if now is not None else datetime.now(tz)
+    minute = current.hour * 60 + current.minute
+    weekday = current.weekday()
+    if start < end:
+        return weekday in weekdays and start <= minute < end
+    return (
+        (weekday in weekdays and minute >= start)
+        or ((weekday - 1) % 7 in weekdays and minute < end)
+    )
+
+
+def pushover_sound_for_event(
+    event: AlertEvent,
+    notification_config: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> str:
+    pushover = notification_config.get("pushover") or {}
+    if not isinstance(pushover, dict):
+        raise ValueError("notification.pushover 설정 형식이 올바르지 않습니다.")
+    silent_sound = str(pushover.get("silent_sound") or "").strip()
+    if not silent_sound:
+        raise ValueError("notification.pushover.silent_sound 설정이 필요합니다.")
+    if event.notification_class != "rail_direct":
+        return silent_sound
+
+    important_departures = {
+        str(value).strip()
+        for value in pushover.get("important_direct_departures", [])
+        if str(value).strip()
+    }
+    if event.departure not in important_departures:
+        return silent_sound
+
+    work_sound = str(pushover.get("work_sound") or "").strip()
+    off_work_sound = str(pushover.get("off_work_sound") or "").strip()
+    if not work_sound or not off_work_sound:
+        raise ValueError("notification.pushover work/off_work sound 설정이 필요합니다.")
+    return (
+        work_sound
+        if is_work_hours(notification_config.get("work_hours") or {}, now=now)
+        else off_work_sound
+    )
+
+
+def build_pushover_batches(
+    events: list[AlertEvent],
+    notification_config: dict[str, Any],
+    *,
+    now: datetime | None = None,
+) -> list[tuple[str, list[AlertEvent]]]:
+    pushover = notification_config.get("pushover") or {}
+    if not isinstance(pushover, dict) or not bool(pushover.get("enabled")):
+        return []
+    grouped: dict[str, list[AlertEvent]] = {}
+    for event in events:
+        sound = pushover_sound_for_event(event, notification_config, now=now)
+        grouped.setdefault(sound, []).append(event)
+    return list(grouped.items())
+
+
+def _send_pushover_batches(
+    events: list[AlertEvent],
+    *,
+    page_url: str,
+    notification_config: dict[str, Any],
+) -> None:
+    from pushover_notify import is_configured, send_message
+
+    batches = build_pushover_batches(events, notification_config)
+    if not batches:
+        return
+    if not is_configured():
+        print("PUSHOVER_SKIPPED reason=credentials_missing")
+        return
+    for sound, grouped_events in batches:
+        send_message(
+            bundle_text(grouped_events),
+            link_url=page_url,
+            sound=sound,
+            title="SeatWatcher 예매 변동",
+        )
+        print(f"PUSHOVER_SENT_BUNDLE sound={sound} count={len(grouped_events)}")
+
+
+def send_alert_batch(
+    events: list[AlertEvent],
+    *,
+    notification_config: dict[str, Any] | None = None,
+) -> str:
     if not events:
         return ""
     from kakao_notify import send_to_me
 
     page_url = build_alert_page_url(events)
     send_to_me(bundle_text(events), link_url=page_url)
+    try:
+        _send_pushover_batches(
+            events,
+            page_url=page_url,
+            notification_config=notification_config or {},
+        )
+    except Exception as exc:
+        print(f"WARNING pushover_bundle count={len(events)}: {exc}")
     return page_url
 
 
@@ -157,6 +307,7 @@ def demo_alert_events() -> list[AlertEvent]:
             key="demo-rail",
             alert_type="테스트",
             transport="기차",
+            notification_class="rail_direct",
             provider="KORAIL",
             date="20260918",
             departure_time="180000",
@@ -173,6 +324,7 @@ def demo_alert_events() -> list[AlertEvent]:
             key="demo-bus",
             alert_type="테스트",
             transport="버스",
+            notification_class="bus",
             provider="TMONEYGO",
             date="20260918",
             departure_time="180000",

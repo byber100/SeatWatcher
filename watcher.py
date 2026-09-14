@@ -517,7 +517,10 @@ def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
 
     if notify and pending_events:
         try:
-            send_alert_batch(pending_events)
+            send_alert_batch(
+                pending_events,
+                notification_config=config.get("notification", {}),
+            )
         except Exception as exc:
             print(f"WARNING kakao_bundle count={len(pending_events)}: {exc}")
             for event in pending_events:
@@ -577,21 +580,24 @@ def main() -> int:
     load_project_env()
     parser = argparse.ArgumentParser(description="SeatWatcher recurring watcher")
     parser.add_argument("--watch", action="store_true", help="설정된 주기로 계속 감시")
-    parser.add_argument("--notify", action="store_true", help="새 후보를 카카오로 알림")
+    parser.add_argument("--notify", action="store_true", help="새 후보를 Kakao/Pushover로 알림")
     parser.add_argument("--rail-debug", action="store_true", help="KORAIL 상세 진단 로그 표시")
-    parser.add_argument("--test-alert", action="store_true", help="실제 조회 없이 Kakao 묶음 알림/Pages 링크 테스트")
+    parser.add_argument("--test-alert", action="store_true", help="실제 조회 없이 Kakao/Pushover 묶음 알림/Pages 링크 테스트")
     parser.add_argument(
         "--wide-rail-test",
         action="store_true",
         help="저장 설정은 건드리지 않고 KORAIL 테스트 날짜/시간 범위를 임시 확대",
     )
     args = parser.parse_args()
+    config = load_config()
     if args.test_alert:
-        page_url = send_alert_batch(demo_alert_events())
+        page_url = send_alert_batch(
+            demo_alert_events(),
+            notification_config=config.get("notification", {}),
+        )
         print("KAKAO_TEST_ALERT_SENT")
         print(f"DETAIL_PAGE {page_url}")
         return 0
-    config = load_config()
     if args.wide_rail_test:
         config = expand_rail_targets_for_wide_test(config)
     interval = max(60, int(config.get("poll_interval_seconds", 120)))
