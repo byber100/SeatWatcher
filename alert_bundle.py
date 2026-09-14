@@ -4,7 +4,6 @@ import base64
 import json
 import os
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta, timezone
 from typing import Any, Iterable
 
 
@@ -146,70 +145,9 @@ def bundle_text(events: list[AlertEvent]) -> str:
     return "\n".join(lines)
 
 
-def _fixed_timezone(value: str) -> timezone:
-    text = value.strip()
-    if text.upper() in {"UTC", "Z", "+00:00", "-00:00"}:
-        return timezone.utc
-    if len(text) != 6 or text[0] not in "+-" or text[3] != ":":
-        raise ValueError("notification.work_hours.timezone은 +09:00 형식이어야 합니다.")
-    try:
-        hours = int(text[1:3])
-        minutes = int(text[4:6])
-    except ValueError as exc:
-        raise ValueError("notification.work_hours.timezone 형식이 올바르지 않습니다.") from exc
-    if hours > 23 or minutes > 59:
-        raise ValueError("notification.work_hours.timezone 범위가 올바르지 않습니다.")
-    offset = timedelta(hours=hours, minutes=minutes)
-    if text[0] == "-":
-        offset = -offset
-    return timezone(offset)
-
-
-def _clock_minutes(value: str, setting_name: str) -> int:
-    text = value.strip()
-    if len(text) != 5 or text[2] != ":":
-        raise ValueError(f"{setting_name}은 HH:MM 형식이어야 합니다.")
-    try:
-        hour = int(text[:2])
-        minute = int(text[3:])
-    except ValueError as exc:
-        raise ValueError(f"{setting_name} 형식이 올바르지 않습니다.") from exc
-    if hour > 23 or minute > 59:
-        raise ValueError(f"{setting_name} 범위가 올바르지 않습니다.")
-    return hour * 60 + minute
-
-
-def is_work_hours(work_hours: dict[str, Any], *, now: datetime | None = None) -> bool:
-    if not work_hours:
-        raise ValueError("notification.work_hours 설정이 필요합니다.")
-    tz = _fixed_timezone(str(work_hours.get("timezone") or ""))
-    weekdays_raw = work_hours.get("weekdays")
-    if not isinstance(weekdays_raw, list) or not weekdays_raw:
-        raise ValueError("notification.work_hours.weekdays 설정이 필요합니다.")
-    weekdays = {int(value) for value in weekdays_raw}
-    if any(value < 0 or value > 6 for value in weekdays):
-        raise ValueError("notification.work_hours.weekdays는 0(월)~6(일) 범위여야 합니다.")
-    start = _clock_minutes(str(work_hours.get("start") or ""), "notification.work_hours.start")
-    end = _clock_minutes(str(work_hours.get("end") or ""), "notification.work_hours.end")
-    if start == end:
-        raise ValueError("notification.work_hours.start와 end는 달라야 합니다.")
-
-    current = now.astimezone(tz) if now is not None else datetime.now(tz)
-    minute = current.hour * 60 + current.minute
-    weekday = current.weekday()
-    if start < end:
-        return weekday in weekdays and start <= minute < end
-    return (
-        (weekday in weekdays and minute >= start)
-        or ((weekday - 1) % 7 in weekdays and minute < end)
-    )
-
-
 def pushover_sound_for_event(
     event: AlertEvent,
     notification_config: dict[str, Any],
-    *,
-    now: datetime | None = None,
 ) -> str:
     pushover = notification_config.get("pushover") or {}
     if not isinstance(pushover, dict):
@@ -217,6 +155,8 @@ def pushover_sound_for_event(
     silent_sound = str(pushover.get("silent_sound") or "").strip()
     if not silent_sound:
         raise ValueError("notification.pushover.silent_sound 설정이 필요합니다.")
+    if silent_sound != "none":
+        raise ValueError("notification.pushover.silent_sound는 none만 허용합니다.")
     if event.notification_class != "rail_direct":
         return silent_sound
 
@@ -228,29 +168,24 @@ def pushover_sound_for_event(
     if event.departure not in important_departures:
         return silent_sound
 
-    work_sound = str(pushover.get("work_sound") or "").strip()
-    off_work_sound = str(pushover.get("off_work_sound") or "").strip()
-    if not work_sound or not off_work_sound:
-        raise ValueError("notification.pushover work/off_work sound 설정이 필요합니다.")
-    return (
-        work_sound
-        if is_work_hours(notification_config.get("work_hours") or {}, now=now)
-        else off_work_sound
-    )
+    important_sound = str(pushover.get("important_sound") or "").strip()
+    if not important_sound:
+        raise ValueError("notification.pushover.important_sound 설정이 필요합니다.")
+    if important_sound not in {"vibrate", "none"}:
+        raise ValueError("notification.pushover.important_sound는 vibrate 또는 none만 허용합니다.")
+    return important_sound
 
 
 def build_pushover_batches(
     events: list[AlertEvent],
     notification_config: dict[str, Any],
-    *,
-    now: datetime | None = None,
 ) -> list[tuple[str, list[AlertEvent]]]:
     pushover = notification_config.get("pushover") or {}
     if not isinstance(pushover, dict) or not bool(pushover.get("enabled")):
         return []
     grouped: dict[str, list[AlertEvent]] = {}
     for event in events:
-        sound = pushover_sound_for_event(event, notification_config, now=now)
+        sound = pushover_sound_for_event(event, notification_config)
         grouped.setdefault(sound, []).append(event)
     return list(grouped.items())
 
