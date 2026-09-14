@@ -131,6 +131,14 @@ Kakao/Pushover 알림까지 사용하려면:
 
 테스트가 끝나면 프로세스를 종료하고 `--wide-rail-test` 없이 다시 실행하면 원래 감시 범위로 즉시 돌아갑니다. 이 모드는 작동 점검용이며 상시 운영 기본값으로 사용하지 않습니다.
 
+Pushover 인증값과 휴대폰 진동 수신만 Kakao 없이 1회 확인하려면:
+
+```bash
+.venv\Scripts\python watcher.py --test-pushover
+```
+
+이 명령은 실제 좌석 조회나 상태 변경 없이 `sound=vibrate`, `priority=0` 테스트 알림 1건만 Pushover로 보냅니다.
+
 실제 좌석 변동을 기다리지 않고 묶음 메시지와 `예매 확인` 링크 자체만 테스트하려면:
 
 ```bash

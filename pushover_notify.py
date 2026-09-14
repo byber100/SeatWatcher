@@ -12,6 +12,8 @@ SEND_URL = "https://api.pushover.net/1/messages.json"
 MAX_MESSAGE_LENGTH = 1024
 MAX_TITLE_LENGTH = 250
 MAX_URL_TITLE_LENGTH = 100
+MAX_URL_LENGTH = 512
+ALLOWED_SOUNDS = {"vibrate", "none"}
 
 
 def _env(name: str, *, required: bool = False) -> str:
@@ -67,6 +69,11 @@ def build_message_form(
         message = message[: MAX_MESSAGE_LENGTH - 1] + "…"
     if not link_url.startswith(("https://", "http://")):
         raise ValueError("Pushover 링크 URL은 http:// 또는 https://로 시작해야 합니다.")
+    if len(link_url) > MAX_URL_LENGTH:
+        raise ValueError("Pushover 링크 URL은 512자를 넘을 수 없습니다.")
+    sound_value = sound.strip()
+    if sound_value not in ALLOWED_SOUNDS:
+        raise ValueError("Pushover sound는 vibrate 또는 none만 허용합니다.")
 
     form = {
         "token": _env("SEATWATCHER_PUSHOVER_APP_TOKEN", required=True),
@@ -76,7 +83,7 @@ def build_message_form(
         "url": link_url,
         "url_title": "예매 확인"[:MAX_URL_TITLE_LENGTH],
         "priority": "0",
-        "sound": sound.strip(),
+        "sound": sound_value,
     }
     device = _env("SEATWATCHER_PUSHOVER_DEVICE")
     if device:
