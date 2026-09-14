@@ -22,9 +22,10 @@
 - **환승 후보 감시**
   - 직통 좌석 유무와 관계없이 환승 시간표를 계속 조회
   - 필요할 때 이용 가능한 환승을 알림 후보로 승격
-- **Kakao 알림 연동**
-  - 같은 polling cycle의 여러 변동을 한 메시지로 묶어 전송
-  - 메시지에는 핵심 1~2건만 간단히 표시하고 `예매 확인` 버튼에서 전체 상세 확인
+- **Kakao + Pushover 알림 연동**
+  - Kakao는 같은 polling cycle의 여러 변동을 한 메시지로 묶어 전송
+  - Pushover는 로컬 설정에서 지정한 중요 직통 출발역만 항상 진동으로 보내고, 환승·버스·기타 직통은 항상 무음 처리. 유음 알림은 사용하지 않음
+  - 메시지에는 핵심 1~2건만 간단히 표시하고 `예매 확인` 버튼/링크에서 전체 상세 확인
   - KORAIL 상세 버튼은 알림편 출발시각 1시간 전(10분 단위 내림)을 조회 시작시각으로 잡아 같은 날짜·출발역·도착역의 주변 시간대를 코레일+ 앱에 미리 채워 연다. 앱 이동이 실패하거나 PC에서는 같은 조건의 KORAIL 웹 조회로 fallback
   - 버스 상세 버튼은 조회 공급자가 KOBUS/티머니 시외/버스타고 중 무엇이었는지와 관계없이 **티머니GO**로 통일한다. 티머니GO의 외부 검색조건 딥링크 공개 규격이 확인되기 전까지는 날짜·출도착·주변 시간 검색조건을 자동 복사한 뒤 티머니GO 앱을 연다
 - **상세 터미널 출력**
@@ -36,8 +37,8 @@
 2. 해당 파일이 없으면 공개 기본 설정인 `watch_targets.json`을 사용합니다.
 3. SeatWatcher가 각 공급자의 운행 정보와 현재 좌석 상태를 반복 조회합니다.
 4. 이용 가능한 새 후보와 같은 편의 잔여석·예매 가능 형태 변동을 판정합니다.
-5. 매진 전환은 알리지 않고, 현재 예매 가능한 상태가 새로 생기거나 변했을 때 설정한 경우 Kakao로 알립니다.
-6. 같은 cycle의 변동은 Kakao 메시지 하나로 묶고, `예매 확인` 버튼은 GitHub Pages의 상세 화면으로 연결합니다.
+5. 매진 전환은 알리지 않고, 현재 예매 가능한 상태가 새로 생기거나 변했을 때 Kakao와 설정된 Pushover로 알립니다.
+6. 같은 cycle의 변동은 Kakao 메시지 하나로 묶고, Pushover는 소리 정책별로 묶습니다. 두 채널의 `예매 확인`은 같은 GitHub Pages 상세 화면으로 연결합니다.
 7. 이후에도 상태를 계속 저장해 같은 내용의 불필요한 반복 알림을 막고 재오픈을 감지합니다.
 
 ## PC 없이 자동 감지
@@ -97,6 +98,8 @@ python -m venv .venv
 OS 환경변수 > .env.local > .env
 ```
 
+Pushover를 사용할 때는 `.env.local`에 `SEATWATCHER_PUSHOVER_APP_TOKEN`, `SEATWATCHER_PUSHOVER_USER_KEY`를 추가합니다. 특정 기기에만 보낼 때는 `SEATWATCHER_PUSHOVER_DEVICE`도 지정할 수 있습니다. Pushover 정책은 `watch_targets*.json`의 `notification.pushover`에서 관리하며 중요 직통은 `vibrate`, 나머지는 `none`만 사용합니다. 실제 중요 출발역 목록은 Git 제외 `watch_targets.local.json`에만 저장하고 공개 기본 설정에는 넣지 않습니다.
+
 ### 3. 감시 대상 설정
 
 공개 저장소의 `watch_targets.json`은 개인 일정이 없는 기본 설정입니다. 실제 운영용 감시 조건은 같은 형식의 `watch_targets.local.json`에 저장하세요.
@@ -114,7 +117,7 @@ watch_targets.local.json  -> 실제 개인 감시 설정, Git 추적 제외
 .venv\Scripts\python watcher.py --watch
 ```
 
-Kakao 알림까지 사용하려면:
+Kakao/Pushover 알림까지 사용하려면:
 
 ```bash
 .venv\Scripts\python watcher.py --watch --notify
@@ -128,13 +131,21 @@ Kakao 알림까지 사용하려면:
 
 테스트가 끝나면 프로세스를 종료하고 `--wide-rail-test` 없이 다시 실행하면 원래 감시 범위로 즉시 돌아갑니다. 이 모드는 작동 점검용이며 상시 운영 기본값으로 사용하지 않습니다.
 
+Pushover 인증값과 휴대폰 진동 수신만 Kakao 없이 1회 확인하려면:
+
+```bash
+.venv\Scripts\python watcher.py --test-pushover
+```
+
+이 명령은 실제 좌석 조회나 상태 변경 없이 `sound=vibrate`, `priority=0` 테스트 알림 1건만 Pushover로 보냅니다.
+
 실제 좌석 변동을 기다리지 않고 묶음 메시지와 `예매 확인` 링크 자체만 테스트하려면:
 
 ```bash
 .venv\Scripts\python watcher.py --test-alert
 ```
 
-이 명령은 가짜 기차 1건 + 버스 1건을 Kakao로 한 번 보내고, 버튼 링크를 GitHub Pages 상세 화면으로 생성합니다. 실제 감시 상태 파일은 변경하지 않습니다.
+이 명령은 가짜 기차 1건 + 버스 1건을 Kakao로 한 번 보내고, Pushover가 설정되어 있으면 같은 테스트 이벤트를 소리 정책에 따라 추가 전송합니다. 두 채널의 링크는 GitHub Pages 상세 화면으로 생성하며 실제 감시 상태 파일은 변경하지 않습니다.
 
 단일 조회 확인에는 `seatwatcher.py`를 사용할 수 있습니다.
 
@@ -162,6 +173,7 @@ rail_provider.py           KORAIL 직통·환승 조회
 bus_providers.py           KOBUS·티머니·버스타고 조회
 last_mile.py               최종 이동 가능 여부 판정
 kakao_notify.py            Kakao 알림 연동
+pushover_notify.py         Pushover 알림/소리/예매 확인 URL 연동
 env_loader.py              로컬 환경변수 로딩
 watch_targets.json         공개 기본 감시 설정
 watch_targets.local.json   실제 개인 감시 설정, Git 제외

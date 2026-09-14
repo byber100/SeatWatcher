@@ -3,13 +3,14 @@
 - `README.md`: 외부 사용자와 방문자에게 프로젝트 목적, 지원 기능, 실행 방법, 주의사항을 소개하는 대표 문서
 - `docs/`: 사용자와 ChatGPT가 개발 중 요구사항·판정 기준·구현 방향·검증 결과를 맞추는 협업 문서 공간. GitHub Pages 배포 루트와 분리
 - `deploy/`: 클라우드 Linux VM 설치 및 systemd 서비스 운영 도구
-- `watcher.py`: 반복 감시 실행기, 잔여석/예매 형태 변동 상태 관리, polling 스케줄링. `watch_targets.local.json`이 있으면 공개 기본 설정보다 우선 사용
-- `alert_bundle.py`: 같은 cycle의 변동을 Kakao 1개 메시지로 묶고 GitHub Pages 상세 링크 payload를 생성
+- `watcher.py`: 반복 감시 실행기, 잔여석/예매 형태 변동 상태 관리, polling 스케줄링, Kakao 없이 수행하는 Pushover 진동 단독 테스트 CLI. `watch_targets.local.json`이 있으면 공개 기본 설정보다 우선 사용
+- `alert_bundle.py`: 같은 cycle의 변동을 Kakao 1개 메시지로 묶고, Pushover는 소리 정책별 묶음과 512자 이하 Pages 축약 링크 단위로 분리하며 GitHub Pages 상세 payload를 생성
 - `seatwatcher.py`: 단일 조회 CLI
 - `rail_provider.py`: KORAIL 직통/환승 조회와 pagination 범위 제어
 - `bus_providers.py`: KOBUS/티머니/버스타고 조회
 - `last_mile.py`: 장거리 도착 후 최종 이동 가능 여부 판정
 - `kakao_notify.py`: Kakao 알림 연동
+- `pushover_notify.py`: Pushover Message API 전송, `예매 확인` URL 버튼 처리. 유음 방지를 위해 sound는 `vibrate`/`none`만 허용
 - `env_loader.py`: OS 환경변수 > `.env.local` > `.env` 순으로 로드하며 빈 템플릿 값은 무시
 - `.env`: Git에 추적되는 빈 설정 템플릿. 실제 비밀값 저장 금지
 - `.env.local`: 실제 로컬 비밀 설정 파일. Git 추적 금지

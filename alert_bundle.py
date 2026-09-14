@@ -9,6 +9,16 @@ from typing import Any, Iterable
 
 DEFAULT_ALERT_PAGE_URL = "https://byber100.github.io/SeatWatcher/"
 ALERT_PAGE_VERSION = "20260913-3"
+PUSHOVER_MAX_URL_LENGTH = 512
+PUSHOVER_PAGE_FIELDS = (
+    "transport",
+    "date",
+    "departure_time",
+    "route",
+    "departure_code",
+    "arrival_code",
+    "change",
+)
 
 
 @dataclass(frozen=True)
@@ -16,6 +26,7 @@ class AlertEvent:
     key: str
     alert_type: str
     transport: str
+    notification_class: str
     provider: str
     date: str
     departure_time: str
@@ -31,6 +42,7 @@ class AlertEvent:
     def page_payload(self) -> dict[str, str]:
         data = asdict(self)
         data.pop("key", None)
+        data.pop("notification_class", None)
         return data
 
     def kakao_item(self) -> dict[str, str]:
@@ -72,6 +84,7 @@ def build_bus_event(*, key: str, item: Any, alert_type: str, previous_signature:
         key=key,
         alert_type=alert_type,
         transport="버스",
+        notification_class="bus",
         provider=provider,
         date=str(getattr(item, "date", "") or ""),
         departure_time=str(getattr(item, "departure_time", "") or ""),
@@ -97,6 +110,7 @@ def build_rail_event(*, key: str, item: Any, alert_type: str, previous_signature
         key=key,
         alert_type=alert_type,
         transport="기차",
+        notification_class="rail_direct" if kind == "직통" else "rail_transfer",
         provider="KORAIL",
         date=str(getattr(item, "date", "") or ""),
         departure_time=str(getattr(item, "departure_time", "") or ""),
@@ -123,6 +137,47 @@ def build_alert_page_url(events: Iterable[AlertEvent]) -> str:
     return f"{page_url}{separator}v={ALERT_PAGE_VERSION}#d={encoded}"
 
 
+def build_pushover_alert_page_url(events: Iterable[AlertEvent]) -> str:
+    base_url = os.getenv("SEATWATCHER_ALERT_PAGE_URL", "").strip() or DEFAULT_ALERT_PAGE_URL
+    if not base_url.startswith(("https://", "http://")):
+        raise ValueError("SeatWatcher 알림 페이지 URL 설정이 필요합니다.")
+    payload: list[dict[str, str]] = []
+    for event in events:
+        data = event.page_payload()
+        payload.append(
+            {
+                key: data[key]
+                for key in PUSHOVER_PAGE_FIELDS
+                if data.get(key)
+            }
+        )
+    raw = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    encoded = base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
+    page_url = base_url.split('#', 1)[0]
+    separator = "&" if "?" in page_url else "?"
+    return f"{page_url}{separator}v={ALERT_PAGE_VERSION}#d={encoded}"
+
+
+def _split_pushover_page_batches(events: list[AlertEvent]) -> list[tuple[str, list[AlertEvent]]]:
+    batches: list[tuple[str, list[AlertEvent]]] = []
+    current: list[AlertEvent] = []
+    for event in events:
+        candidate = current + [event]
+        candidate_url = build_pushover_alert_page_url(candidate)
+        if len(candidate_url) <= PUSHOVER_MAX_URL_LENGTH:
+            current = candidate
+            continue
+        if not current:
+            raise ValueError("Pushover 예매 확인 URL을 512자 이하로 만들 수 없습니다.")
+        batches.append((build_pushover_alert_page_url(current), current))
+        current = [event]
+        if len(build_pushover_alert_page_url(current)) > PUSHOVER_MAX_URL_LENGTH:
+            raise ValueError("Pushover 예매 확인 URL을 512자 이하로 만들 수 없습니다.")
+    if current:
+        batches.append((build_pushover_alert_page_url(current), current))
+    return batches
+
+
 def bundle_text(events: list[AlertEvent]) -> str:
     demo = bool(events) and all(event.key.startswith("demo-") for event in events)
     heading = "🧪 SeatWatcher 테스트 알림" if demo else "🚨 SeatWatcher"
@@ -141,13 +196,93 @@ def bundle_text(events: list[AlertEvent]) -> str:
     return "\n".join(lines)
 
 
-def send_alert_batch(events: list[AlertEvent]) -> str:
+def pushover_sound_for_event(
+    event: AlertEvent,
+    notification_config: dict[str, Any],
+) -> str:
+    pushover = notification_config.get("pushover") or {}
+    if not isinstance(pushover, dict):
+        raise ValueError("notification.pushover 설정 형식이 올바르지 않습니다.")
+    silent_sound = str(pushover.get("silent_sound") or "").strip()
+    if not silent_sound:
+        raise ValueError("notification.pushover.silent_sound 설정이 필요합니다.")
+    if silent_sound != "none":
+        raise ValueError("notification.pushover.silent_sound는 none만 허용합니다.")
+    if event.notification_class != "rail_direct":
+        return silent_sound
+
+    important_departures = {
+        str(value).strip()
+        for value in pushover.get("important_direct_departures", [])
+        if str(value).strip()
+    }
+    if event.departure not in important_departures:
+        return silent_sound
+
+    important_sound = str(pushover.get("important_sound") or "").strip()
+    if not important_sound:
+        raise ValueError("notification.pushover.important_sound 설정이 필요합니다.")
+    if important_sound not in {"vibrate", "none"}:
+        raise ValueError("notification.pushover.important_sound는 vibrate 또는 none만 허용합니다.")
+    return important_sound
+
+
+def build_pushover_batches(
+    events: list[AlertEvent],
+    notification_config: dict[str, Any],
+) -> list[tuple[str, list[AlertEvent]]]:
+    pushover = notification_config.get("pushover") or {}
+    if not isinstance(pushover, dict) or not bool(pushover.get("enabled")):
+        return []
+    grouped: dict[str, list[AlertEvent]] = {}
+    for event in events:
+        sound = pushover_sound_for_event(event, notification_config)
+        grouped.setdefault(sound, []).append(event)
+    return list(grouped.items())
+
+
+def _send_pushover_batches(
+    events: list[AlertEvent],
+    *,
+    notification_config: dict[str, Any],
+) -> None:
+    from pushover_notify import is_configured, send_message
+
+    batches = build_pushover_batches(events, notification_config)
+    if not batches:
+        return
+    if not is_configured():
+        print("PUSHOVER_SKIPPED reason=credentials_missing")
+        return
+    for sound, grouped_events in batches:
+        for page_url, page_events in _split_pushover_page_batches(grouped_events):
+            send_message(
+                bundle_text(page_events),
+                link_url=page_url,
+                sound=sound,
+                title="SeatWatcher 예매 변동",
+            )
+            print(f"PUSHOVER_SENT_BUNDLE sound={sound} count={len(page_events)}")
+
+
+def send_alert_batch(
+    events: list[AlertEvent],
+    *,
+    notification_config: dict[str, Any] | None = None,
+) -> str:
     if not events:
         return ""
     from kakao_notify import send_to_me
 
     page_url = build_alert_page_url(events)
     send_to_me(bundle_text(events), link_url=page_url)
+    try:
+        _send_pushover_batches(
+            events,
+            notification_config=notification_config or {},
+        )
+    except Exception as exc:
+        print(f"WARNING pushover_bundle count={len(events)}: {exc}")
     return page_url
 
 
@@ -157,6 +292,7 @@ def demo_alert_events() -> list[AlertEvent]:
             key="demo-rail",
             alert_type="테스트",
             transport="기차",
+            notification_class="rail_direct",
             provider="KORAIL",
             date="20260918",
             departure_time="180000",
@@ -173,6 +309,7 @@ def demo_alert_events() -> list[AlertEvent]:
             key="demo-bus",
             alert_type="테스트",
             transport="버스",
+            notification_class="bus",
             provider="TMONEYGO",
             date="20260918",
             departure_time="180000",

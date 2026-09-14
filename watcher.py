@@ -39,6 +39,8 @@ _ensure_project_python()
 
 from alert_bundle import (
     AlertEvent,
+    build_alert_page_url,
+    build_pushover_alert_page_url,
     build_bus_event,
     build_rail_event,
     demo_alert_events,
@@ -517,7 +519,10 @@ def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
 
     if notify and pending_events:
         try:
-            send_alert_batch(pending_events)
+            send_alert_batch(
+                pending_events,
+                notification_config=config.get("notification", {}),
+            )
         except Exception as exc:
             print(f"WARNING kakao_bundle count={len(pending_events)}: {exc}")
             for event in pending_events:
@@ -573,25 +578,53 @@ def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
         f"notify={notify} cycle_seconds={elapsed:.1f}"
     )
 
+def send_pushover_test_alert() -> str:
+    from pushover_notify import is_configured, send_message
+
+    if not is_configured():
+        raise RuntimeError(
+            "Pushover 인증값이 없습니다. .env.local의 "
+            "SEATWATCHER_PUSHOVER_APP_TOKEN/SEATWATCHER_PUSHOVER_USER_KEY를 확인하세요."
+        )
+
+    page_url = build_pushover_alert_page_url(demo_alert_events())
+    send_message(
+        "SeatWatcher Pushover 진동 테스트입니다. 실제 좌석 변동 알림이 아닙니다.",
+        link_url=page_url,
+        sound="vibrate",
+        title="SeatWatcher 진동 테스트",
+    )
+    print("PUSHOVER_TEST_SENT sound=vibrate priority=0")
+    print(f"DETAIL_PAGE {page_url}")
+    return page_url
+
+
 def main() -> int:
     load_project_env()
     parser = argparse.ArgumentParser(description="SeatWatcher recurring watcher")
     parser.add_argument("--watch", action="store_true", help="설정된 주기로 계속 감시")
-    parser.add_argument("--notify", action="store_true", help="새 후보를 카카오로 알림")
+    parser.add_argument("--notify", action="store_true", help="새 후보를 Kakao/Pushover로 알림")
     parser.add_argument("--rail-debug", action="store_true", help="KORAIL 상세 진단 로그 표시")
-    parser.add_argument("--test-alert", action="store_true", help="실제 조회 없이 Kakao 묶음 알림/Pages 링크 테스트")
+    parser.add_argument("--test-alert", action="store_true", help="실제 조회 없이 Kakao/Pushover 묶음 알림/Pages 링크 테스트")
+    parser.add_argument("--test-pushover", action="store_true", help="Kakao 없이 Pushover 진동 테스트 1회 전송")
     parser.add_argument(
         "--wide-rail-test",
         action="store_true",
         help="저장 설정은 건드리지 않고 KORAIL 테스트 날짜/시간 범위를 임시 확대",
     )
     args = parser.parse_args()
+    config = load_config()
+    if args.test_pushover:
+        send_pushover_test_alert()
+        return 0
     if args.test_alert:
-        page_url = send_alert_batch(demo_alert_events())
+        page_url = send_alert_batch(
+            demo_alert_events(),
+            notification_config=config.get("notification", {}),
+        )
         print("KAKAO_TEST_ALERT_SENT")
         print(f"DETAIL_PAGE {page_url}")
         return 0
-    config = load_config()
     if args.wide_rail_test:
         config = expand_rail_targets_for_wide_test(config)
     interval = max(60, int(config.get("poll_interval_seconds", 120)))

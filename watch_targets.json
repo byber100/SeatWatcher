@@ -1,6 +1,14 @@
 {
   "poll_interval_seconds": 120,
   "transfer_display_direct_threshold": 3,
+  "notification": {
+    "pushover": {
+      "enabled": true,
+      "important_direct_departures": [],
+      "important_sound": "vibrate",
+      "silent_sound": "none"
+    }
+  },
   "bus_targets": [],
   "rail_targets": []
 }
