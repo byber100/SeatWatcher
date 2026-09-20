@@ -6,7 +6,7 @@
       "enabled": true,
       "important_direct_departures": [],
       "important_sound": "vibrate",
-      "silent_sound": "none"
+      "silent_sound": "vibrate"
     }
   },
   "bus_targets": [],

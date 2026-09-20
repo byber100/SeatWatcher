@@ -203,28 +203,13 @@ def pushover_sound_for_event(
     pushover = notification_config.get("pushover") or {}
     if not isinstance(pushover, dict):
         raise ValueError("notification.pushover 설정 형식이 올바르지 않습니다.")
-    silent_sound = str(pushover.get("silent_sound") or "").strip()
-    if not silent_sound:
-        raise ValueError("notification.pushover.silent_sound 설정이 필요합니다.")
-    if silent_sound != "none":
-        raise ValueError("notification.pushover.silent_sound는 none만 허용합니다.")
-    if event.notification_class != "rail_direct":
-        return silent_sound
-
-    important_departures = {
-        str(value).strip()
-        for value in pushover.get("important_direct_departures", [])
-        if str(value).strip()
-    }
-    if event.departure not in important_departures:
-        return silent_sound
-
     important_sound = str(pushover.get("important_sound") or "").strip()
-    if not important_sound:
-        raise ValueError("notification.pushover.important_sound 설정이 필요합니다.")
-    if important_sound not in {"vibrate", "none"}:
-        raise ValueError("notification.pushover.important_sound는 vibrate 또는 none만 허용합니다.")
-    return important_sound
+    default_sound = str(pushover.get("silent_sound") or "").strip()
+    if important_sound != "vibrate" or default_sound != "vibrate":
+        raise ValueError(
+            "Pushover 운영 sound는 important_sound/silent_sound 모두 vibrate여야 합니다."
+        )
+    return "vibrate"
 
 
 def build_pushover_batches(

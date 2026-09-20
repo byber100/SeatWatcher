@@ -13,7 +13,7 @@ MAX_MESSAGE_LENGTH = 1024
 MAX_TITLE_LENGTH = 250
 MAX_URL_TITLE_LENGTH = 100
 MAX_URL_LENGTH = 512
-ALLOWED_SOUNDS = {"vibrate", "none"}
+ALLOWED_SOUNDS = {"vibrate"}
 
 
 def _env(name: str, *, required: bool = False) -> str:
@@ -73,7 +73,7 @@ def build_message_form(
         raise ValueError("Pushover 링크 URL은 512자를 넘을 수 없습니다.")
     sound_value = sound.strip()
     if sound_value not in ALLOWED_SOUNDS:
-        raise ValueError("Pushover sound는 vibrate 또는 none만 허용합니다.")
+        raise ValueError("Pushover sound는 vibrate만 허용합니다.")
 
     form = {
         "token": _env("SEATWATCHER_PUSHOVER_APP_TOKEN", required=True),

@@ -24,7 +24,7 @@
   - 필요할 때 이용 가능한 환승을 알림 후보로 승격
 - **Pushover 알림 연동**
   - 운영 알림은 Pushover만 사용
-  - 로컬 설정에서 지정한 중요 직통 출발역만 항상 진동으로 보내고, 환승·버스·기타 직통은 항상 무음 처리. 유음 알림은 사용하지 않음
+  - 모든 운영 알림을 항상 진동(`vibrate`)으로 전송. 무음(`none`)과 유음 알림은 사용하지 않음
   - 메시지에는 핵심 1~2건만 간단히 표시하고 `예매 확인` 버튼/링크에서 전체 상세 확인
   - KORAIL 상세 버튼은 알림편 출발시각 1시간 전(10분 단위 내림)을 조회 시작시각으로 잡아 같은 날짜·출발역·도착역의 주변 시간대를 코레일+ 앱에 미리 채워 연다. 앱 이동이 실패하거나 PC에서는 같은 조건의 KORAIL 웹 조회로 fallback
   - 버스 상세 버튼은 조회 공급자가 KOBUS/티머니 시외/버스타고 중 무엇이었는지와 관계없이 **티머니GO**로 통일한다. 티머니GO의 외부 검색조건 딥링크 공개 규격이 확인되기 전까지는 날짜·출도착·주변 시간 검색조건을 자동 복사한 뒤 티머니GO 앱을 연다
@@ -97,7 +97,7 @@ python -m venv .venv
 OS 환경변수 > .env.local > .env
 ```
 
-Pushover를 사용할 때는 `.env.local`에 `SEATWATCHER_PUSHOVER_APP_TOKEN`, `SEATWATCHER_PUSHOVER_USER_KEY`를 추가합니다. 특정 기기에만 보낼 때는 `SEATWATCHER_PUSHOVER_DEVICE`도 지정할 수 있습니다. Pushover 정책은 `watch_targets*.json`의 `notification.pushover`에서 관리하며 중요 직통은 `vibrate`, 나머지는 `none`만 사용합니다. 실제 중요 출발역 목록은 Git 제외 `watch_targets.local.json`에만 저장하고 공개 기본 설정에는 넣지 않습니다.
+Pushover를 사용할 때는 `.env.local`에 `SEATWATCHER_PUSHOVER_APP_TOKEN`, `SEATWATCHER_PUSHOVER_USER_KEY`를 추가합니다. 특정 기기에만 보낼 때는 `SEATWATCHER_PUSHOVER_DEVICE`도 지정할 수 있습니다. Pushover 정책은 `watch_targets*.json`의 `notification.pushover`에서 관리하며 모든 운영 알림은 `vibrate`만 사용합니다. 실제 중요 출발역 목록은 Git 제외 `watch_targets.local.json`에만 저장하고 공개 기본 설정에는 넣지 않습니다.
 
 ### 3. 감시 대상 설정
 
