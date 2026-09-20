@@ -22,7 +22,6 @@ def require_private_files() -> None:
     required = [
         ROOT / ".env.local",
         ROOT / "watch_targets.local.json",
-        ROOT / ".runtime" / "kakao_tokens.json",
     ]
     missing = [str(path.relative_to(ROOT)) for path in required if not path.exists()]
     if missing:

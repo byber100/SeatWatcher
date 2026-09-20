@@ -45,7 +45,7 @@ class AlertEvent:
         data.pop("notification_class", None)
         return data
 
-    def kakao_item(self) -> dict[str, str]:
+    def summary_item(self) -> dict[str, str]:
         icon = "🚄" if self.transport == "기차" else "🚌"
         date_text = f"{self.date[4:6]}/{self.date[6:8]}" if len(self.date) >= 8 else self.date
         time_text = f"{self.departure_time[:2]}:{self.departure_time[2:4]}" if len(self.departure_time) >= 4 else self.departure_time
@@ -185,7 +185,7 @@ def bundle_text(events: list[AlertEvent]) -> str:
     for index, event in enumerate(events[:2]):
         if index:
             lines.append("")
-        item = event.kakao_item()
+        item = event.summary_item()
         lines.append(item["title"])
         lines.append(item["description"])
     lines.append("")
@@ -250,10 +250,9 @@ def _send_pushover_batches(
 
     batches = build_pushover_batches(events, notification_config)
     if not batches:
-        return
+        raise RuntimeError("Pushover 알림이 비활성화되어 있습니다.")
     if not is_configured():
-        print("PUSHOVER_SKIPPED reason=credentials_missing")
-        return
+        raise RuntimeError("Pushover 인증정보가 설정되지 않았습니다.")
     for sound, grouped_events in batches:
         for page_url, page_events in _split_pushover_page_batches(grouped_events):
             send_message(
@@ -272,17 +271,12 @@ def send_alert_batch(
 ) -> str:
     if not events:
         return ""
-    from kakao_notify import send_to_me
 
     page_url = build_alert_page_url(events)
-    send_to_me(bundle_text(events), link_url=page_url)
-    try:
-        _send_pushover_batches(
-            events,
-            notification_config=notification_config or {},
-        )
-    except Exception as exc:
-        print(f"WARNING pushover_bundle count={len(events)}: {exc}")
+    _send_pushover_batches(
+        events,
+        notification_config=notification_config or {},
+    )
     return page_url
 
 

@@ -38,6 +38,7 @@ KOBUS_TERMINALS = {
 
 TMONEY_TERMINALS = {
     "성남": ("1349701", "성남"),
+    "신갈": ("1709401", "신갈(용인)"),
     "동대구": ("4124601", "동대구"),
     "수원터미널": ("1658501", "수원터미널"),
     "서수원": ("1640501", "서수원"),
@@ -279,27 +280,50 @@ def search_tmoney(
 
     candidates: list[BusCandidate] = []
     seen: set[tuple[str, str | None]] = set()
-    for match in _TMONEY_CALL_RE.finditer(body):
-        args = [value.replace("\\'", "'") for value in _QUOTED_ARG_RE.findall(match.group(1))]
-        if len(args) < 18:
-            continue
 
-        departure_time = _normalize_hhmm(args[8])
+    # 현재 티머니 시외버스 목록은 PC 표의 예약 버튼에 readSasFeeInf(...)
+    # 정보를 넣고, 매진편은 btn_soldout으로 표시한다. 과거 호출형 정규식만
+    # 훑으면 매진편을 아예 보지 못해 재오픈 감시가 불가능하므로 행 단위로 읽는다.
+    pc_table_match = re.search(
+        r'<div class="accordian_table pc_ver">(.*?)'
+        r'<div class="accordian_table mobile_ver">',
+        body,
+        re.S | re.I,
+    )
+    table_body = pc_table_match.group(1) if pc_table_match else body
+    row_re = re.compile(r"<tr\b([^>]*)>(.*?)</tr>", re.S | re.I)
+    for attrs, row in row_re.findall(table_body):
+        if "detail" in attrs.lower():
+            continue
+        row_text = re.sub(r"\s+", " ", html.unescape(re.sub(r"<[^>]+>", " ", row))).strip()
+        time_match = re.search(r"\b(\d{1,2})\s*:\s*(\d{2})\b", row_text)
+        if not time_match:
+            continue
+        departure_time = f"{int(time_match.group(1)):02d}{time_match.group(2)}"
         if not _in_window(departure_time, start_hhmm, end_hhmm):
             continue
 
-        company = args[11] or None
+        reservation_match = _TMONEY_CALL_RE.search(row)
+        args = (
+            [value.replace("\\'", "'") for value in _QUOTED_ARG_RE.findall(reservation_match.group(1))]
+            if reservation_match
+            else []
+        )
+        company = args[11] or None if len(args) > 11 else None
+        bus_class = args[12] or None if len(args) > 12 else None
+        remaining = _to_int(args[16]) if len(args) > 16 else None
+        total = _to_int(args[17]) if len(args) > 17 else None
+
+        has_reservation_button = "btn_reservation" in row
+        sold_out = "btn_soldout" in row
+        bookable = has_reservation_button and not sold_out
+        if not include_unavailable and not bookable:
+            continue
+
         key = (departure_time, company)
         if key in seen:
             continue
         seen.add(key)
-
-        remaining = _to_int(args[16])
-        total = _to_int(args[17])
-        bookable = remaining is None or remaining > 0
-        if not include_unavailable and not bookable:
-            continue
-
         candidates.append(
             BusCandidate(
                 provider="TMONEY_INTERCITY",
@@ -308,7 +332,7 @@ def search_tmoney(
                 date=date,
                 departure_time=departure_time,
                 company=company,
-                bus_class=args[12] or None,
+                bus_class=bus_class,
                 remaining_seats=remaining,
                 total_seats=total,
                 bookable=bookable,
@@ -490,6 +514,8 @@ def search_user_bus_routes(
                 ("tmoney", "성남", "동대구"),
             ]
         )
+    elif (departure_city, arrival_city) == ("신갈", "동대구"):
+        routes.append(("tmoney", "신갈", "동대구"))
     elif (departure_city, arrival_city) == ("동대구", "성남"):
         routes.extend(
             [

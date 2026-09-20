@@ -129,10 +129,19 @@ def rail_quality(item: object) -> int:
 UNAVAILABLE_SIGNATURE = "unavailable"
 
 
-def target_query_key(target: dict) -> tuple[str, str, str, str, str]:
+def target_query_key(target: dict) -> tuple[str, ...]:
     return tuple(
         str(target.get(name, ""))
-        for name in ("departure", "arrival", "date", "start", "end")
+        for name in (
+            "departure",
+            "arrival",
+            "date",
+            "start",
+            "end",
+            "direct_only",
+            "train_type_prefix",
+            "arrival_before",
+        )
     )
 
 
@@ -524,7 +533,7 @@ def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
                 notification_config=config.get("notification", {}),
             )
         except Exception as exc:
-            print(f"WARNING kakao_bundle count={len(pending_events)}: {exc}")
+            print(f"WARNING pushover_bundle count={len(pending_events)}: {exc}")
             for event in pending_events:
                 if event.transport == "버스":
                     if event.key in previous_bus_availability:
@@ -542,7 +551,7 @@ def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
                         current_rail_quality.pop(event.key, None)
         else:
             sent.update(event.key for event in pending_events)
-            print(f"KAKAO_SENT_BUNDLE count={len(pending_events)}")
+            print(f"PUSHOVER_SENT_BUNDLE count={len(pending_events)}")
 
     if notify:
         active_bus_ids = {str(target["id"]) for target in config.get("bus_targets", [])}
@@ -603,10 +612,10 @@ def main() -> int:
     load_project_env()
     parser = argparse.ArgumentParser(description="SeatWatcher recurring watcher")
     parser.add_argument("--watch", action="store_true", help="설정된 주기로 계속 감시")
-    parser.add_argument("--notify", action="store_true", help="새 후보를 Kakao/Pushover로 알림")
+    parser.add_argument("--notify", action="store_true", help="새 후보를 Pushover로 알림")
     parser.add_argument("--rail-debug", action="store_true", help="KORAIL 상세 진단 로그 표시")
-    parser.add_argument("--test-alert", action="store_true", help="실제 조회 없이 Kakao/Pushover 묶음 알림/Pages 링크 테스트")
-    parser.add_argument("--test-pushover", action="store_true", help="Kakao 없이 Pushover 진동 테스트 1회 전송")
+    parser.add_argument("--test-alert", action="store_true", help="실제 조회 없이 Pushover 묶음 알림/Pages 링크 테스트")
+    parser.add_argument("--test-pushover", action="store_true", help="Pushover 진동 테스트 1회 전송")
     parser.add_argument(
         "--wide-rail-test",
         action="store_true",
@@ -622,7 +631,7 @@ def main() -> int:
             demo_alert_events(),
             notification_config=config.get("notification", {}),
         )
-        print("KAKAO_TEST_ALERT_SENT")
+        print("PUSHOVER_TEST_ALERT_SENT")
         print(f"DETAIL_PAGE {page_url}")
         return 0
     if args.wide_rail_test:

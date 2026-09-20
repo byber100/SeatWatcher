@@ -213,7 +213,15 @@ def _train_type(train: object) -> str:
 
 def _train_matches_target(target: dict, train: object) -> bool:
     prefix = str(target.get("train_type_prefix", "") or "").strip().upper()
-    return not prefix or _train_type(train).upper().startswith(prefix)
+    if prefix and not _train_type(train).upper().startswith(prefix):
+        return False
+
+    arrival_before = str(target.get("arrival_before", "") or "").strip()
+    if arrival_before:
+        arrival_time = str(getattr(train, "arrival_time", "") or "").zfill(6)
+        if not arrival_time or arrival_time >= arrival_before:
+            return False
+    return True
 
 
 def _name(train: object) -> str:
