@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import math
+import time
 from dataclasses import dataclass, field
 from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
@@ -17,6 +18,8 @@ NAVER_ROOM_BOOKABLE_CODES = {"11", "21", "23", "01", "39", "29", "19"}
 
 _KORAIL_PROCESS_CONFIG = None
 _NAVER_STOPS_BY_NAME: dict[str, dict] | None = None
+_KORAIL_DIRECT_RETRY_AFTER: dict[str, float] = {}
+KORAIL_DIRECT_RETRY_SECONDS = 3600.0
 
 
 def _korail_process_config(api):
@@ -1142,17 +1145,65 @@ def search_korail_targets(
     transfer_display_direct_threshold: int = DEFAULT_TRANSFER_DISPLAY_DIRECT_THRESHOLD,
     target_status: dict[str, bool] | None = None,
 ) -> list[RailCandidate]:
-    naver_targets = [target for target in targets if target.get("direct_only")]
+    direct_targets = [target for target in targets if target.get("direct_only")]
     mobile_targets = [target for target in targets if not target.get("direct_only")]
     rows: list[RailCandidate] = []
-    if naver_targets:
-        rows.extend(
-            _search_naver_direct_targets(
-                naver_targets,
-                debug=debug,
-                target_status=target_status,
+
+    if direct_targets:
+        now = time.monotonic()
+        korail_targets: list[dict] = []
+        fallback_targets: list[dict] = []
+        for target in direct_targets:
+            target_id = str(target.get("id", "?"))
+            retry_after = _KORAIL_DIRECT_RETRY_AFTER.get(target_id, 0.0)
+            if now < retry_after:
+                fallback_targets.append(target)
+                remaining = max(1, int(retry_after - now))
+                print(
+                    f"RAIL DEGRADED target={target_id} primary=KORAIL fallback=NAVER "
+                    f"reason=cooldown retry_in={remaining}s"
+                )
+            else:
+                korail_targets.append(target)
+
+        if korail_targets:
+            korail_status: dict[str, bool] = {}
+            rows.extend(
+                _search_korail_mobile_targets(
+                    korail_targets,
+                    debug=debug,
+                    transfer_display_direct_threshold=transfer_display_direct_threshold,
+                    target_status=korail_status,
+                )
             )
-        )
+            for target in korail_targets:
+                target_id = str(target.get("id", "?"))
+                if korail_status.get(target_id, False):
+                    _KORAIL_DIRECT_RETRY_AFTER.pop(target_id, None)
+                    if target_status is not None:
+                        target_status[target_id] = True
+                    continue
+                _KORAIL_DIRECT_RETRY_AFTER[target_id] = now + KORAIL_DIRECT_RETRY_SECONDS
+                fallback_targets.append(target)
+                print(
+                    f"RAIL DEGRADED target={target_id} primary=KORAIL fallback=NAVER "
+                    f"reason=primary_failed retry_in={int(KORAIL_DIRECT_RETRY_SECONDS)}s"
+                )
+
+        if fallback_targets:
+            fallback_status: dict[str, bool] = {}
+            rows.extend(
+                _search_naver_direct_targets(
+                    fallback_targets,
+                    debug=debug,
+                    target_status=fallback_status,
+                )
+            )
+            if target_status is not None:
+                for target in fallback_targets:
+                    target_id = str(target.get("id", "?"))
+                    target_status[target_id] = fallback_status.get(target_id, False)
+
     if mobile_targets:
         rows.extend(
             _search_korail_mobile_targets(
