@@ -1,14 +1,133 @@
 from __future__ import annotations
 
+import json
 import math
-import os
 from dataclasses import dataclass, field
+from types import SimpleNamespace
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 SEAT_RESERVABLE_CODE = "11"
 SOLD_OUT_CODE = "13"
 STANDBY_WAIT_FLAG = " 9"
 ALL_TRAIN_GROUP_CODE = "109"
 DEFAULT_TRANSFER_DISPLAY_DIRECT_THRESHOLD = 3
+NAVER_TRAIN_API_BASE = "https://pt.map.naver.com/end-train/api"
+NAVER_ROOM_BOOKABLE_CODES = {"11", "21", "23", "01", "39", "29", "19"}
+
+_KORAIL_PROCESS_CONFIG = None
+_NAVER_STOPS_BY_NAME: dict[str, dict] | None = None
+
+
+def _korail_process_config(api):
+    """Reuse one anonymous DynaPath identity for the lifetime of the watcher process."""
+    global _KORAIL_PROCESS_CONFIG
+    if _KORAIL_PROCESS_CONFIG is None:
+        _KORAIL_PROCESS_CONFIG = api.KorailConfig(enable_dynapath=True)
+        print("KORAIL AUTH | anonymous read-only | dynapath=process-stable")
+    return _KORAIL_PROCESS_CONFIG
+
+
+def _station_lookup_key(name: object) -> str:
+    value = str(name or "").strip()
+    return value[:-1] if value.endswith("역") else value
+
+
+def _naver_post_json(path: str, payload: dict) -> dict:
+    body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    url = f"{NAVER_TRAIN_API_BASE}/{path.lstrip('/')}"
+    last_error: Exception | None = None
+    for attempt in range(2):
+        request = Request(
+            url,
+            data=body,
+            headers={
+                "Accept": "application/json",
+                "Content-Type": "application/json",
+                "User-Agent": "SeatWatcher/1.0",
+            },
+            method="POST",
+        )
+        try:
+            with urlopen(request, timeout=15) as response:
+                raw = response.read().decode("utf-8")
+            result = json.loads(raw)
+            if not isinstance(result, dict):
+                raise RuntimeError("NAVER train response is not an object")
+            return result
+        except (HTTPError, URLError, TimeoutError, json.JSONDecodeError, OSError) as exc:
+            last_error = exc
+            if attempt == 0:
+                continue
+    raise RuntimeError(f"NAVER train request failed: {last_error}")
+
+
+def _naver_stops_by_name() -> dict[str, dict]:
+    global _NAVER_STOPS_BY_NAME
+    if _NAVER_STOPS_BY_NAME is None:
+        response = _naver_post_json("train-stop-all", {"lang": "ko"})
+        rows = response.get("res")
+        if not isinstance(rows, list):
+            raise RuntimeError("NAVER train-stop-all response missing res list")
+        _NAVER_STOPS_BY_NAME = {
+            _station_lookup_key(item.get("stopName")): item
+            for item in rows
+            if isinstance(item, dict) and item.get("stopName") and item.get("stopId")
+        }
+        print(f"NAVER RAIL | station cache {len(_NAVER_STOPS_BY_NAME)}")
+    return _NAVER_STOPS_BY_NAME
+
+
+def _naver_room_flags(code: object, name: object) -> tuple[str, str, str, str]:
+    raw_code = str(code or "").strip()
+    status_name = str(name or "").strip()
+    bookable = raw_code in NAVER_ROOM_BOOKABLE_CODES
+    has_standing = bookable and "입석" in status_name
+    has_free = bookable and "자유석" in status_name
+    has_mixed = has_standing and "좌석" in status_name
+
+    if has_mixed:
+        return SOLD_OUT_CODE, "", "", "G"
+    if has_standing:
+        return SOLD_OUT_CODE, SEAT_RESERVABLE_CODE, "", ""
+    if has_free:
+        return SOLD_OUT_CODE, "", SEAT_RESERVABLE_CODE, ""
+    if bookable:
+        return SEAT_RESERVABLE_CODE, "", "", ""
+    return raw_code, "", "", ""
+
+
+def _naver_train(row: dict) -> SimpleNamespace:
+    train_group = row.get("trainGroupCode") or {}
+    train_class = row.get("stopLaborTrainCfCode") or {}
+    general_code, standing_code, free_code, merge_flag = _naver_room_flags(
+        row.get("generalRoomReserveCode"),
+        row.get("generalRoomReserveName"),
+    )
+    special_code = str(row.get("specialRoomReserveCode") or "").strip()
+    if special_code in NAVER_ROOM_BOOKABLE_CODES:
+        special_code = SEAT_RESERVABLE_CODE
+    train_number = str(row.get("trainNumber") or "").strip()
+    display_number = train_number.lstrip("0") or train_number
+    return SimpleNamespace(
+        train_no=display_number,
+        train_class_name=str(train_class.get("name") or train_group.get("name") or "기타").strip(),
+        train_group_name=str(train_group.get("name") or "").strip(),
+        departure_time=str(row.get("departureTime") or "").zfill(6),
+        arrival_time=str(row.get("arrivalTime") or "").zfill(6),
+        departure_station_name=str(row.get("departureStopName") or "").strip(),
+        arrival_station_name=str(row.get("arrivalStopName") or "").strip(),
+        departure_station_code=str(row.get("departureReserveStopCode") or "").strip(),
+        arrival_station_code=str(row.get("arrivalReserveStopCode") or "").strip(),
+        general_reservation_code=general_code,
+        special_reservation_code=special_code,
+        standing_reservation_code=standing_code,
+        free_reservation_code=free_code,
+        merge_seat_application_flag=merge_flag,
+        wait_reservation_flag="",
+        standard_remaining_seat_count=None,
+        first_class_remaining_seat_count=None,
+    )
 
 
 @dataclass(frozen=True)
@@ -87,6 +206,11 @@ def _train_type(train: object) -> str:
         or getattr(train, "train_group_name", "")
         or "기타"
     ).strip()
+
+
+def _train_matches_target(target: dict, train: object) -> bool:
+    prefix = str(target.get("train_type_prefix", "") or "").strip().upper()
+    return not prefix or _train_type(train).upper().startswith(prefix)
 
 
 def _name(train: object) -> str:
@@ -360,6 +484,8 @@ def _direct(
                 page_departures.append(dep)
             if not (target["start"] <= dep <= target["end"]):
                 continue
+            if not _train_matches_target(target, train):
+                continue
 
             row_key = (
                 str(getattr(train, "train_no", "") or ""),
@@ -480,6 +606,8 @@ def _transfer(
             if dep:
                 page_departures.append(dep)
             if not (target["start"] <= dep <= target["end"]):
+                continue
+            if not _train_matches_target(target, first) or not _train_matches_target(target, second):
                 continue
 
             row_key = (
@@ -634,23 +762,189 @@ def _types_text(*scans: ModeScanResult) -> str:
     return ",".join(sorted(values)) if values else "-"
 
 
-def search_korail_targets(
+def _naver_direct(target: dict) -> ModeScanResult:
+    stops = _naver_stops_by_name()
+    departure_stop = stops.get(_station_lookup_key(target.get("departure")))
+    arrival_stop = stops.get(_station_lookup_key(target.get("arrival")))
+    if departure_stop is None or arrival_stop is None:
+        raise RuntimeError(
+            f"NAVER station not found: {target.get('departure', '?')}->{target.get('arrival', '?')}"
+        )
+
+    scan = ModeScanResult()
+    query_start = str(target["start"])
+    seen_rows: set[tuple[str, str, str, str]] = set()
+    seen_starts: set[str] = set()
+
+    while query_start <= str(target["end"]):
+        if query_start in seen_starts:
+            print(f"WARNING NAVER pagination repeated target={target.get('id', '?')} start={query_start}")
+            break
+        seen_starts.add(query_start)
+
+        response = _naver_post_json(
+            "train-schedule",
+            {
+                "departureStopCode": str(departure_stop["stopId"]),
+                "arrivalStopCode": str(arrival_stop["stopId"]),
+                "passengerCount": "1",
+                "departureDate": str(target["date"]),
+                "departureTime": query_start,
+                "changeTrainDivisionCode": "1",
+                "trainGroupCode": ALL_TRAIN_GROUP_CODE,
+                "seatAttrCode": "015",
+            },
+        )
+        result = response.get("res")
+        schedules = result.get("schedules") if isinstance(result, dict) else None
+        if not isinstance(schedules, list) or not schedules:
+            break
+
+        schedule = schedules[0] if isinstance(schedules[0], dict) else {}
+        train_rows = schedule.get("trainList")
+        if not isinstance(train_rows, list) or not train_rows:
+            break
+
+        page_departures: list[str] = []
+        for row in train_rows:
+            if not isinstance(row, dict):
+                continue
+            train = _naver_train(row)
+            dep = str(train.departure_time or "").zfill(6)
+            arrival_time = str(train.arrival_time or "").zfill(6)
+            if dep:
+                page_departures.append(dep)
+            if not (str(target["start"]) <= dep <= str(target["end"])):
+                continue
+            if not _train_matches_target(target, train):
+                continue
+
+            row_key = (str(train.train_no), dep, arrival_time, _train_type(train))
+            if row_key in seen_rows:
+                continue
+            seen_rows.add(row_key)
+
+            scan.scheduled_count += 1
+            scan.train_types.add(_train_type(train))
+            availability_summary = _availability_summary(train)
+            scan.schedule_lines.append(
+                f"{_time_text(dep)}→{_time_text(arrival_time)} | {_name(train)} | "
+                f"{availability_summary}"
+            )
+
+            labels, categories = _seat_options(train)
+            _record_categories(scan, categories)
+            waitlist = _waitlist_available(train)
+            if waitlist and not labels:
+                scan.waitlist_count += 1
+            if not labels and not waitlist:
+                if "매진" in availability_summary:
+                    scan.sold_out_count += 1
+                continue
+
+            scan.candidates.append(
+                RailCandidate(
+                    str(target["id"]),
+                    "DIRECT",
+                    str(target["date"]),
+                    str(target["departure"]),
+                    str(target["arrival"]),
+                    dep,
+                    arrival_time,
+                    _name(train),
+                    ", ".join(labels) if labels else "예약대기 가능",
+                    _availability_rank(train) if labels else 0,
+                    0,
+                    str(train.departure_station_code or "").strip(),
+                    str(train.arrival_station_code or "").strip(),
+                )
+            )
+
+        if page_departures and max(page_departures) > str(target["end"]):
+            break
+        if str(schedule.get("followPageExistYn") or "").upper() != "Y":
+            break
+        if not page_departures:
+            break
+        next_start = _plus_one_second(max(page_departures))
+        if next_start <= query_start or next_start > str(target["end"]):
+            break
+        query_start = next_start
+
+    return scan
+
+
+def _search_naver_direct_targets(
+    targets: list[dict],
+    *,
+    debug: bool = False,
+    target_status: dict[str, bool] | None = None,
+) -> list[RailCandidate]:
+    rows: list[RailCandidate] = []
+    print(f"NAVER RAIL 시작 | 검색조건 {len(targets)}개 | 직통 읽기 전용")
+    for index, target in enumerate(targets, 1):
+        target_id = str(target.get("id", "?"))
+        route = f"{target.get('departure', '?')}->{target.get('arrival', '?')}"
+        date = str(target.get("date", "?"))
+        start = str(target.get("start", "?"))
+        end = str(target.get("end", "?"))
+        date_text = f"{date[4:6]}/{date[6:8]}" if len(date) >= 8 else date
+        start_text = f"{start[:2]}:{start[2:4]}" if len(start) >= 4 else start
+        end_text = f"{end[:2]}:{end[2:4]}" if len(end) >= 4 else end
+        print(
+            f"[기차 {index:02d}/{len(targets):02d}] {date_text} {route} "
+            f"{start_text}~{end_text} NAVER 직통 검색 중..."
+        )
+        try:
+            direct_scan = _naver_direct(target)
+        except Exception as exc:
+            if target_status is not None:
+                target_status[target_id] = False
+            print(f"WARNING NAVER RAIL target={target_id}: {exc}")
+            continue
+
+        if target_status is not None:
+            target_status[target_id] = True
+        rows.extend(direct_scan.candidates)
+        print("  직통 운행")
+        if direct_scan.schedule_lines:
+            for line in direct_scan.schedule_lines:
+                print(f"    - {line}")
+        else:
+            print("    - 해당 시간대 직통 없음")
+        reserved_count = sum(_candidate_availability_rank(item) == 3 for item in direct_scan.candidates)
+        free_count = sum(_candidate_availability_rank(item) == 2 for item in direct_scan.candidates)
+        standing_count = sum(_candidate_availability_rank(item) == 1 for item in direct_scan.candidates)
+        print(
+            f"  -> 완료 | 직통 운행 {direct_scan.scheduled_count}건 / "
+            f"직통 매진 {direct_scan.sold_out_count}건 / 감시 후보 {len(direct_scan.candidates)}건 "
+            f"(지정좌석 {reserved_count} / 자유석 {free_count} / 입석·혼합 {standing_count})"
+        )
+        if debug:
+            print(
+                f"     DEBUG target={target_id} provider=naver "
+                f"seat_signals={direct_scan.seated_count} "
+                f"standing_signals={direct_scan.standing_count} "
+                f"mixed_signals={direct_scan.mixed_count} "
+                f"types={_types_text(direct_scan)}"
+            )
+    print(f"NAVER RAIL 완료 | 후보 {len(rows)}건")
+    return rows
+
+
+def _search_korail_mobile_targets(
     targets: list[dict],
     *,
     debug: bool = False,
     transfer_display_direct_threshold: int = DEFAULT_TRANSFER_DISPLAY_DIRECT_THRESHOLD,
     target_status: dict[str, bool] | None = None,
 ) -> list[RailCandidate]:
-    member_no = os.getenv("SEATWATCHER_KORAIL_MEMBER_NO", "").strip()
-    password = os.getenv("SEATWATCHER_KORAIL_PASSWORD", "")
-    if not member_no or not password:
-        raise RuntimeError("KORAIL 환경변수 자격 증명이 없습니다.")
     try:
         import korail_mobile_api as api
     except ModuleNotFoundError as exc:
         raise RuntimeError("SeatWatcher .venv Python을 사용하세요.") from exc
 
-    client = api.KorailClient(api.KorailConfig(enable_dynapath=True))
+    client = api.KorailClient(_korail_process_config(api))
     rows: list[RailCandidate] = []
     errors: list[str] = []
     total_scheduled_direct = 0
@@ -658,7 +952,6 @@ def search_korail_targets(
     total_filtered_transfer = 0
     total_dominated_transfer = 0
     try:
-        client.login(member_no, password)
         station_rows = client.get_station_data().stations
         station_names = {
             str(station.code): str(station.name)
@@ -696,7 +989,8 @@ def search_korail_targets(
             transfer_scan = ModeScanResult()
             target_failed = False
 
-            for mode in ("DIRECT", "TRANSFER"):
+            modes = ("DIRECT",) if target.get("direct_only") else ("DIRECT", "TRANSFER")
+            for mode in modes:
                 mode_text = "직통" if mode == "DIRECT" else "환승"
                 print(f"  {mode_text} 검색 중...")
                 try:
@@ -755,7 +1049,9 @@ def search_korail_targets(
                 print("    - 해당 시간대 직통 없음")
 
             print("  환승 운행")
-            if transfer_scan.schedule_lines:
+            if target.get("direct_only"):
+                print("    - 대상 설정으로 비활성")
+            elif transfer_scan.schedule_lines:
                 for line in transfer_scan.schedule_lines:
                     print(f"    - {line}")
             else:
@@ -835,9 +1131,35 @@ def search_korail_targets(
         if errors:
             print(f"KORAIL_PARTIAL mode_errors={len(errors)} ids={','.join(errors)}")
     finally:
-        try:
-            client.logout()
-        except Exception:
-            pass
         client.close()
+    return sorted(rows, key=lambda item: (item.date, item.departure_time, item.target_id, item.kind))
+
+
+def search_korail_targets(
+    targets: list[dict],
+    *,
+    debug: bool = False,
+    transfer_display_direct_threshold: int = DEFAULT_TRANSFER_DISPLAY_DIRECT_THRESHOLD,
+    target_status: dict[str, bool] | None = None,
+) -> list[RailCandidate]:
+    naver_targets = [target for target in targets if target.get("direct_only")]
+    mobile_targets = [target for target in targets if not target.get("direct_only")]
+    rows: list[RailCandidate] = []
+    if naver_targets:
+        rows.extend(
+            _search_naver_direct_targets(
+                naver_targets,
+                debug=debug,
+                target_status=target_status,
+            )
+        )
+    if mobile_targets:
+        rows.extend(
+            _search_korail_mobile_targets(
+                mobile_targets,
+                debug=debug,
+                transfer_display_direct_threshold=transfer_display_direct_threshold,
+                target_status=target_status,
+            )
+        )
     return sorted(rows, key=lambda item: (item.date, item.departure_time, item.target_id, item.kind))

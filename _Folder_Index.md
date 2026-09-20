@@ -6,7 +6,7 @@
 - `watcher.py`: 반복 감시 실행기, 잔여석/예매 형태 변동 상태 관리, polling 스케줄링, Kakao 없이 수행하는 Pushover 진동 단독 테스트 CLI. `watch_targets.local.json`이 있으면 공개 기본 설정보다 우선 사용
 - `alert_bundle.py`: 같은 cycle의 변동을 Kakao 1개 메시지로 묶고, Pushover는 소리 정책별 묶음과 512자 이하 Pages 축약 링크 단위로 분리하며 GitHub Pages 상세 payload를 생성
 - `seatwatcher.py`: 단일 조회 CLI
-- `rail_provider.py`: KORAIL 직통/환승 조회와 pagination 범위 제어
+- `rail_provider.py`: KORAIL 익명 읽기 전용 직통/환승 조회, 프로세스 안정 DynaPath, pagination 범위 제어. 비공개 target별 `direct_only`, `train_type_prefix` 필터 지원
 - `bus_providers.py`: KOBUS/티머니/버스타고 조회
 - `last_mile.py`: 장거리 도착 후 최종 이동 가능 여부 판정
 - `kakao_notify.py`: Kakao 알림 연동
@@ -16,7 +16,7 @@
 - `.env.local`: 실제 로컬 비밀 설정 파일. Git 추적 금지
 - `env.example.txt`: `.env.local`에 복사해 사용할 환경변수 키 예시
 - `watch_targets.json`: Git에 추적되는 공개 기본 설정. 실제 개인 일정을 넣지 않음
-- `watch_targets.local.json`: 실제 로컬 감시 설정. Git 추적 금지
+- `watch_targets.local.json`: 실제 로컬 감시 설정과 중요 직통 Pushover 진동 정책. Git 추적 금지
 - `requirements.txt`: Python 의존성
 - `.vscode/`: VS Code 실행 설정
 - `docs/*.gdoc`: Google Drive 포인터 파일. 문서 원문이 아니므로 Git 추적 제외

@@ -289,7 +289,7 @@ def collect_rail(
                 successful_targets.update(aliases)
         return expanded, successful_targets
     except Exception as exc:
-        print(f"WARNING KORAIL cycle: {exc}")
+        print(f"WARNING RAIL cycle: {exc}")
         return [], set()
 
 
