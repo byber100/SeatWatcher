@@ -338,6 +338,14 @@ def _run_auto_waitlist_fast_path(
         if not _is_auto_waitlist_candidate(item, target, notify):
             continue
 
+        safe, reason = rail_last_mile(item)
+        if not safe:
+            print(
+                f"AUTO_WAITLIST_FAST skipped=last_mile target={target_id} "
+                f"reason={reason}"
+            )
+            continue
+
         item_key = rail_key(item)
         started = time.perf_counter()
         outcome = attempt_auto_waitlist(item, target, notify_result=True)
