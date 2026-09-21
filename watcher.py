@@ -303,6 +303,78 @@ def collect_rail(
         return [], set()
 
 
+def _is_auto_waitlist_candidate(item: object, target: dict, notify: bool) -> bool:
+    return (
+        notify
+        and bool(target.get("auto_waitlist"))
+        and getattr(item, "kind", "") == "DIRECT"
+        and rail_quality(item) <= 0
+        and "예약대기 가능" in str(getattr(item, "seat_text", "") or "")
+    )
+
+
+def _run_auto_waitlist_fast_path(
+    rails: list[object],
+    rail_target_by_id: dict[str, dict],
+    notify: bool,
+) -> tuple[dict[str, object | None], set[str]]:
+    """Apply standby before unrelated bus/result processing can delay the mutation.
+
+    Candidates are already sorted by departure time. For each target, safe
+    preflight failures may fall through to the next train, but once a mutation
+    was attempted or an existing/successful standby is confirmed, later
+    candidates for that target are suppressed for this cycle.
+    """
+    outcomes: dict[str, object | None] = {}
+    claimed_target_ids: set[str] = set()
+    if not notify:
+        return outcomes, claimed_target_ids
+
+    for item in rails:
+        target_id = str(getattr(item, "target_id", "") or "")
+        if target_id in claimed_target_ids:
+            continue
+        target = rail_target_by_id.get(target_id, {})
+        if not _is_auto_waitlist_candidate(item, target, notify):
+            continue
+
+        safe, reason = rail_last_mile(item)
+        if not safe:
+            print(
+                f"AUTO_WAITLIST_FAST skipped=last_mile target={target_id} "
+                f"reason={reason}"
+            )
+            continue
+
+        item_key = rail_key(item)
+        started = time.perf_counter()
+        outcome = attempt_auto_waitlist(item, target, notify_result=True)
+        outcomes[item_key] = outcome
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+
+        if outcome is None:
+            print(
+                f"AUTO_WAITLIST_FAST status=skipped target={target_id} "
+                f"latency_ms={elapsed_ms:.0f}"
+            )
+            continue
+
+        print(
+            f"AUTO_WAITLIST_FAST status={outcome.status} "
+            f"success={outcome.success} attempted={outcome.attempted} "
+            f"train={outcome.train_no} dep={outcome.departure_time} "
+            f"latency_ms={elapsed_ms:.0f}"
+        )
+        if (
+            outcome.attempted
+            or outcome.success
+            or outcome.status in {"already_present", "success_recovered", "ambiguous_failure"}
+        ):
+            claimed_target_ids.add(target_id)
+
+    return outcomes, claimed_target_ids
+
+
 def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
     cycle_started = time.perf_counter()
     if notify:
@@ -360,6 +432,13 @@ def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
     with ThreadPoolExecutor(max_workers=2) as executor:
         bus_future = executor.submit(collect_bus, config)
         rails, successful_rail_targets = collect_rail(config, debug=rail_debug)
+
+        # Reservation standby is latency-sensitive. Execute it immediately
+        # after the KORAIL result is available instead of waiting for unrelated
+        # bus I/O, printing, state bookkeeping, or bundled notifications.
+        auto_waitlist_outcomes, auto_waitlist_claimed_targets = (
+            _run_auto_waitlist_fast_path(rails, rail_target_by_id, notify)
+        )
         bus_scans = bus_future.result()
 
     buses: list[tuple[str, BusCandidate]] = []
@@ -515,25 +594,26 @@ def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
             continue
 
         target = rail_target_by_id.get(str(item.target_id), {})
-        auto_waitlist_candidate = (
-            notify
-            and bool(target.get("auto_waitlist"))
-            and item.kind == "DIRECT"
-            and quality <= 0
-            and "예약대기 가능" in str(item.seat_text)
-        )
+        auto_waitlist_candidate = _is_auto_waitlist_candidate(item, target, notify)
         if auto_waitlist_candidate:
-            outcome = attempt_auto_waitlist(
-                item,
-                target,
-                notify_result=True,
-            )
-            if outcome is not None:
-                print(
-                    f"AUTO_WAITLIST status={outcome.status} "
-                    f"success={outcome.success} attempted={outcome.attempted} "
-                    f"train={outcome.train_no} dep={outcome.departure_time}"
+            # The fast path above normally handled this before bus/result work.
+            # Fallback here only if a future caller bypasses that path.
+            if (
+                item_key not in auto_waitlist_outcomes
+                and str(item.target_id) not in auto_waitlist_claimed_targets
+            ):
+                outcome = attempt_auto_waitlist(
+                    item,
+                    target,
+                    notify_result=True,
                 )
+                auto_waitlist_outcomes[item_key] = outcome
+                if outcome is not None:
+                    print(
+                        f"AUTO_WAITLIST_FALLBACK status={outcome.status} "
+                        f"success={outcome.success} attempted={outcome.attempted} "
+                        f"train={outcome.train_no} dep={outcome.departure_time}"
+                    )
             # 예약대기 가능 상태는 일반 좌석 알림 대신 자동 신청 결과만 알린다.
             current_rail_availability[item_key] = current_signature
             current_rail_quality[item_key] = quality
@@ -675,7 +755,28 @@ def main() -> int:
         return 0
     if args.wide_rail_test:
         config = expand_rail_targets_for_wide_test(config)
-    interval = max(60, int(config.get("poll_interval_seconds", 120)))
+
+    base_interval = max(60, int(config.get("poll_interval_seconds", 120)))
+    auto_waitlist_enabled = any(
+        bool(target.get("auto_waitlist"))
+        for target in config.get("rail_targets", [])
+    )
+    if auto_waitlist_enabled:
+        try:
+            requested_fast_interval = int(
+                config.get("auto_waitlist_poll_interval_seconds", 30)
+            )
+        except (TypeError, ValueError):
+            requested_fast_interval = 30
+        fast_interval = min(60, max(20, requested_fast_interval))
+        interval = min(base_interval, fast_interval)
+        print(
+            f"AUTO_WAITLIST_FAST_POLL interval={interval}s "
+            f"base_interval={base_interval}s"
+        )
+    else:
+        interval = base_interval
+
     while True:
         cycle_started = time.perf_counter()
         try:

@@ -15,7 +15,22 @@ ROOT = Path(__file__).resolve().parent
 STATE_PATH = ROOT / ".runtime" / "standby_reservation_state.json"
 WAITLIST_FLAG = " 9"
 DEFAULT_RETRY_SECONDS = 120
+DEFAULT_FAST_RETRY_SECONDS = 30
 DEFAULT_MAX_SAFE_RETRIES = 3
+
+
+def _safe_retry_seconds(target: dict[str, Any]) -> int:
+    """Use a short standby-only retry while keeping a hard lower bound."""
+    try:
+        value = int(
+            target.get(
+                "auto_waitlist_retry_seconds",
+                target.get("auto_waitlist_poll_interval_seconds", DEFAULT_FAST_RETRY_SECONDS),
+            )
+        )
+    except (TypeError, ValueError):
+        value = DEFAULT_FAST_RETRY_SECONDS
+    return min(DEFAULT_RETRY_SECONDS, max(20, value))
 
 
 def _patch_train_class_code_validation() -> None:
@@ -448,6 +463,7 @@ def attempt_auto_waitlist(
     state = _read_state()
     record = state["records"].get(key)
     max_retries = max(1, int(target.get("auto_waitlist_max_safe_retries", DEFAULT_MAX_SAFE_RETRIES)))
+    retry_seconds = _safe_retry_seconds(target)
     if isinstance(record, dict) and not _retry_allowed(record, max_retries):
         return StandbyOutcome(
             key,
@@ -473,7 +489,7 @@ def attempt_auto_waitlist(
             state, outcome,
             notify_candidate=candidate if notify_result else None,
             terminal=False,
-            next_retry_seconds=DEFAULT_RETRY_SECONDS,
+            next_retry_seconds=retry_seconds,
         )
 
     import korail_mobile_api as api
@@ -511,7 +527,7 @@ def attempt_auto_waitlist(
                 state, outcome,
                 notify_candidate=candidate if notify_result else None,
                 terminal=False,
-                next_retry_seconds=DEFAULT_RETRY_SECONDS,
+                next_retry_seconds=retry_seconds,
             )
         if str(getattr(train, "wait_reservation_flag", "") or "") != WAITLIST_FLAG:
             outcome = StandbyOutcome(
@@ -523,7 +539,7 @@ def attempt_auto_waitlist(
                 state, outcome,
                 notify_candidate=candidate if notify_result else None,
                 terminal=False,
-                next_retry_seconds=DEFAULT_RETRY_SECONDS,
+                next_retry_seconds=retry_seconds,
             )
 
         consent = api.MutationConsent(allow_reserve=True, dry_run=False)
@@ -612,7 +628,7 @@ def attempt_auto_waitlist(
             state, outcome,
             notify_candidate=candidate if notify_result else None,
             terminal=False,
-            next_retry_seconds=DEFAULT_RETRY_SECONDS,
+            next_retry_seconds=retry_seconds,
         )
     finally:
         try:
