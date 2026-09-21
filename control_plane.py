@@ -339,6 +339,7 @@ def command_status() -> dict[str, Any]:
         "public_ip": current_public_ip(),
         "seatwatcher": systemd_state("seatwatcher"),
         "control": systemd_state("seatwatcher-control"),
+        "revision": git_revision_state(),
     }
 
 
