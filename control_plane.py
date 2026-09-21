@@ -32,6 +32,7 @@ ALLOWED_COMMANDS = {
     "verify_korail_full",
     "reload_targets",
     "tail_log",
+    "deploy_update",
 }
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 DEFAULT_CONFIG = {
@@ -338,8 +339,165 @@ def command_status() -> dict[str, Any]:
         "public_ip": current_public_ip(),
         "seatwatcher": systemd_state("seatwatcher"),
         "control": systemd_state("seatwatcher-control"),
+        "revision": git_revision_state(),
     }
 
+
+def git_revision_state() -> dict[str, Any]:
+    """Return non-secret Git/deployment revisions for mobile observability."""
+    head = run_fixed(["git", "-C", str(ROOT), "rev-parse", "HEAD"], timeout=10)
+    origin = run_fixed(
+        ["git", "-C", str(ROOT), "rev-parse", "origin/main"],
+        timeout=10,
+    )
+    marker_path = ROOT / ".runtime" / "origin_main_runtime_revision.txt"
+    try:
+        marker = marker_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        marker = ""
+    return {
+        "head": head["stdout"].strip() if head["returncode"] == 0 else "",
+        "origin_main": origin["stdout"].strip() if origin["returncode"] == 0 else "",
+        "runtime_revision": marker,
+    }
+
+
+def _git_show_text(ref: str, relative_path: str) -> tuple[bool, str]:
+    """Read one approved text file from Git without truncating its contents."""
+    try:
+        completed = subprocess.run(
+            ["git", "-C", str(ROOT), "show", f"{ref}:{relative_path}"],
+            capture_output=True,
+            text=True,
+            timeout=20,
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "git_show_timeout"
+    if completed.returncode != 0:
+        return False, tail_text(completed.stderr or completed.stdout, 6000)
+    if len(completed.stdout.encode("utf-8")) > 512_000:
+        return False, "git_show_file_too_large"
+    return True, completed.stdout
+
+
+def deploy_update() -> dict[str, Any]:
+    """Deploy the approved watcher runtime files from origin/main with rollback.
+
+    Drive cannot choose a ref, path, or shell command. The control plane always
+    fetches origin and deploys only this fixed allowlist. New Python text is
+    syntax-checked before any live file is replaced. Existing files are backed
+    up, replacements are atomic, and a failed service restart triggers rollback.
+    """
+    approved_files = ("watcher.py", "standby_reservation.py")
+
+    fetched = run_fixed(
+        ["git", "-C", str(ROOT), "fetch", "--prune", "origin"],
+        timeout=60,
+    )
+    if fetched["returncode"] != 0:
+        return {
+            "ok": False,
+            "stage": "git_fetch",
+            "returncode": fetched["returncode"],
+            "stderr": tail_text(fetched["stderr"] or fetched["stdout"], 6000),
+            "revision": git_revision_state(),
+        }
+
+    revision = git_revision_state()
+    origin_revision = str(revision.get("origin_main") or "")
+    if re.fullmatch(r"[0-9a-f]{40}", origin_revision) is None:
+        return {
+            "ok": False,
+            "stage": "origin_revision",
+            "error": "invalid_origin_main_revision",
+            "revision": revision,
+        }
+
+    sources: dict[str, str] = {}
+    for relative_path in approved_files:
+        ok, value = _git_show_text("origin/main", relative_path)
+        if not ok:
+            return {
+                "ok": False,
+                "stage": "git_show",
+                "file": relative_path,
+                "error": value,
+                "origin_main": origin_revision,
+            }
+        try:
+            compile(value, relative_path, "exec")
+        except SyntaxError as exc:
+            return {
+                "ok": False,
+                "stage": "syntax_check",
+                "file": relative_path,
+                "error": f"{exc.msg} line={exc.lineno}",
+                "origin_main": origin_revision,
+            }
+        sources[relative_path] = value
+
+    backup_dir = RUNTIME / "deploy_backups" / origin_revision[:12]
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    replaced: list[str] = []
+
+    try:
+        for relative_path, source in sources.items():
+            live_path = ROOT / relative_path
+            backup_path = backup_dir / relative_path
+            if live_path.exists():
+                backup_path.write_bytes(live_path.read_bytes())
+
+            temp_path = live_path.with_suffix(live_path.suffix + ".deploy.tmp")
+            temp_path.write_text(source, encoding="utf-8")
+            temp_path.replace(live_path)
+            replaced.append(relative_path)
+
+        restarted = restart_watcher()
+        if not bool(restarted.get("ok")):
+            raise RuntimeError(
+                "watcher_restart_failed:"
+                + str(restarted.get("restart_returncode"))
+            )
+    except Exception as exc:
+        rollback_errors: list[str] = []
+        for relative_path in reversed(replaced):
+            backup_path = backup_dir / relative_path
+            live_path = ROOT / relative_path
+            try:
+                if backup_path.exists():
+                    temp_path = live_path.with_suffix(live_path.suffix + ".rollback.tmp")
+                    temp_path.write_bytes(backup_path.read_bytes())
+                    temp_path.replace(live_path)
+            except Exception as rollback_exc:
+                rollback_errors.append(
+                    f"{relative_path}:{type(rollback_exc).__name__}"
+                )
+        rollback_restart = restart_watcher()
+        return {
+            "ok": False,
+            "stage": "deploy_or_restart",
+            "error": f"{type(exc).__name__}:{exc}",
+            "rolled_back": not rollback_errors and bool(rollback_restart.get("ok")),
+            "rollback_errors": rollback_errors,
+            "origin_main": origin_revision,
+            "runtime_revision": git_revision_state().get("runtime_revision", ""),
+        }
+
+    marker_path = ROOT / ".runtime" / "origin_main_runtime_revision.txt"
+    marker_path.parent.mkdir(parents=True, exist_ok=True)
+    marker_path.write_text(origin_revision + "\n", encoding="utf-8")
+
+    final_status = command_status()
+    return {
+        "ok": final_status["seatwatcher"]["active"] == "active",
+        "stage": "complete",
+        "origin_main": origin_revision,
+        "runtime_revision": origin_revision,
+        "deployed_files": list(approved_files),
+        "backup_dir": str(backup_dir.relative_to(ROOT)),
+        "seatwatcher": final_status["seatwatcher"],
+    }
 
 def restart_watcher() -> dict[str, Any]:
     restart = run_fixed(
@@ -399,6 +557,8 @@ def execute_command(command: str, args: dict[str, Any]) -> dict[str, Any]:
         }
     if command == "tail_log":
         return tail_log(args)
+    if command == "deploy_update":
+        return deploy_update()
     raise AssertionError(command)
 
 
@@ -454,6 +614,7 @@ def build_health(
         "last_request_id": state.get("last_request_id"),
         "last_command": state.get("last_command"),
         "last_result_ok": state.get("last_result_ok"),
+        "revision": git_revision_state(),
         "korail_protection_marker": marker if isinstance(marker, dict) else {},
         "last_error": last_error,
     }
