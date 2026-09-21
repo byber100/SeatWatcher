@@ -3,7 +3,7 @@
 `docs/`는 외부 소개용 문서가 아니라 사용자와 ChatGPT가 함께 개발하면서 요구사항, 판정 규칙, 구현 방향, 검증 결과를 맞추기 위한 협업 문서 공간이다.
 
 - `00_프로젝트_설계기준.md`: 현재 요구사항, 아키텍처, 설정 분리, Git 운영, 철도 네이버 지도 기차 비로그인 직통 공급자·KORAIL 모바일 환승 보조 공급자·target별 직통/열차종 필터, 좌석 변동/Pushover 단독 알림·무유음 강제 정책·단독 테스트 규칙, polling 성능 규칙, 검증 기준을 유지하는 개발 협업 SSOT
-- `01_작업일지.md`: 채팅 간 작업 인수인계용 Markdown 작업일지. 최근 완료, 좌석 변동/polling 검증 결과, 로컬 커밋·무결성 게이트 상태, Local MCP 원격 SSH/OCI 운영 인수인계, 다음 작업을 기록하며 새 채팅에서 설계기준과 함께 먼저 읽는다. Oracle Cloud 서버 구축·운영 절차가 바뀌면 `../../../20_Notes/21_Knowledge/사용법/oracle_cloud_seatwatcher_server_setup_guide.md`도 같은 작업에서 함께 갱신한다.
+- `01_작업일지.md`: 채팅 간 작업 인수인계용 Markdown 작업일지. 최근 완료, 좌석 변동/polling·예약대기 결과 알림 재시도 검증, 로컬 커밋·무결성 게이트 상태, Local MCP 원격 SSH/OCI 운영 인수인계, 다음 작업을 기록하며 새 채팅에서 설계기준과 함께 먼저 읽는다. Oracle Cloud 서버 구축·운영 절차가 바뀌면 `../../../20_Notes/21_Knowledge/사용법/oracle_cloud_seatwatcher_server_setup_guide.md`도 같은 작업에서 함께 갱신한다.
 - GitHub Pages `예매 확인` 상세 화면은 개발 docs와 분리한 원격 `gh-pages` 브랜치 `/(root)`에서 관리한다. `docs/`에는 배포용 웹 루트를 두지 않는다.
 - `*.gdoc`: Google Drive 데스크톱이 만들 수 있는 로컬 포인터이며 문서 원문이 아니다. 기존 `01_작업일지.gdoc`는 삭제했고, 재생성되는 `.gdoc`도 공개 Git에서는 제외한다.
 

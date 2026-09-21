@@ -5,6 +5,7 @@ import os
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from alert_bundle import DEFAULT_ALERT_PAGE_URL
@@ -187,8 +188,7 @@ def _notify(candidate: object, outcome: StandbyOutcome) -> None:
     from pushover_notify import is_configured, send_message
 
     if not is_configured():
-        print("WARNING AUTO_WAITLIST pushover_not_configured", flush=True)
-        return
+        raise RuntimeError("Pushover is not configured")
     date = str(getattr(candidate, "date", ""))
     date_text = f"{date[4:6]}/{date[6:8]}" if len(date) == 8 else date
     dep = _norm_time(getattr(candidate, "departure_time", ""))
@@ -213,6 +213,41 @@ def _notify(candidate: object, outcome: StandbyOutcome) -> None:
     )
 
 
+def _notification_candidate_snapshot(candidate: object) -> dict[str, str]:
+    """Keep only non-sensitive fields needed to rebuild a failed Pushover result."""
+    return {
+        "date": str(getattr(candidate, "date", "") or ""),
+        "departure_station": str(getattr(candidate, "departure_station", "") or ""),
+        "arrival_station": str(getattr(candidate, "arrival_station", "") or ""),
+        "departure_time": _norm_time(getattr(candidate, "departure_time", "")),
+        "train_text": str(getattr(candidate, "train_text", "") or ""),
+    }
+
+
+def _outcome_from_record(key: str, record: dict[str, Any]) -> StandbyOutcome:
+    return StandbyOutcome(
+        key=key,
+        status=str(record.get("status") or "unknown"),
+        attempted=bool(record.get("attempted", False)),
+        success=bool(record.get("success")),
+        message=str(record.get("message") or "예약대기 처리 결과입니다."),
+        train_no=str(record.get("train_no") or ""),
+        departure_time=str(record.get("departure_time") or ""),
+        verified_in_history=bool(record.get("verified_in_history")),
+    )
+
+
+def _notification_retry_due(record: dict[str, Any], now: datetime) -> bool:
+    last_attempt = str(record.get("last_notification_attempt_at_utc") or "")
+    if not last_attempt:
+        return True
+    try:
+        attempted_at = datetime.fromisoformat(last_attempt.replace("Z", "+00:00"))
+    except ValueError:
+        return True
+    return now >= attempted_at + timedelta(seconds=DEFAULT_RETRY_SECONDS)
+
+
 def _record_outcome(
     state: dict[str, Any],
     outcome: StandbyOutcome,
@@ -221,16 +256,24 @@ def _record_outcome(
     terminal: bool,
     next_retry_seconds: int | None = None,
 ) -> StandbyOutcome:
+    """Persist the reservation result separately from notification delivery.
+
+    The reservation result may be terminal while Pushover is still pending.
+    Persist pending state before the external notification call so a process
+    crash cannot silently lose the result alert.
+    """
     now = _utc_now()
     records = state.setdefault("records", {})
     previous = records.get(outcome.key)
     attempts = int(previous.get("attempts", 0)) if isinstance(previous, dict) else 0
     if outcome.attempted:
         attempts += 1
+
     record = {
         "status": outcome.status,
         "success": outcome.success,
         "terminal": terminal,
+        "attempted": outcome.attempted,
         "attempts": attempts,
         "last_attempt_at_utc": _iso(now),
         "message": outcome.message,
@@ -240,19 +283,115 @@ def _record_outcome(
     }
     if next_retry_seconds is not None:
         record["next_retry_at_utc"] = _iso(now + timedelta(seconds=next_retry_seconds))
+
     notified_status = previous.get("notified_status") if isinstance(previous, dict) else None
+    if notified_status:
+        record["notified_status"] = notified_status
+
     if notify_candidate is not None and notified_status != outcome.status:
+        record["notification_pending"] = True
+        record["notification_candidate"] = _notification_candidate_snapshot(notify_candidate)
+        record["last_notification_attempt_at_utc"] = _iso(now)
+
+        # Write before calling Pushover. If the process dies mid-request, the
+        # next watcher cycle retries only the alert, never the reservation.
+        records[outcome.key] = record
+        _write_state(state)
+
         try:
             _notify(notify_candidate, outcome)
         except Exception as exc:
-            print(f"WARNING AUTO_WAITLIST pushover: {exc}", flush=True)
+            record["last_notification_error_type"] = type(exc).__name__
+            print(
+                f"WARNING AUTO_WAITLIST pushover_pending "
+                f"status={outcome.status} error={type(exc).__name__}",
+                flush=True,
+            )
         else:
             record["notified_status"] = outcome.status
-    elif notified_status:
-        record["notified_status"] = notified_status
+            record["notification_pending"] = False
+            record.pop("last_notification_error_type", None)
+
+        records[outcome.key] = record
+        _write_state(state)
+        return outcome
+
+    if isinstance(previous, dict) and previous.get("notification_pending"):
+        # A caller that intentionally suppresses notification must not erase a
+        # previously queued delivery attempt.
+        record["notification_pending"] = True
+        if isinstance(previous.get("notification_candidate"), dict):
+            record["notification_candidate"] = previous["notification_candidate"]
+        if previous.get("last_notification_attempt_at_utc"):
+            record["last_notification_attempt_at_utc"] = previous[
+                "last_notification_attempt_at_utc"
+            ]
+        if previous.get("last_notification_error_type"):
+            record["last_notification_error_type"] = previous[
+                "last_notification_error_type"
+            ]
+
     records[outcome.key] = record
     _write_state(state)
     return outcome
+
+
+def retry_pending_waitlist_notifications() -> dict[str, int]:
+    """Retry failed terminal-result alerts without touching KORAIL mutations."""
+    state = _read_state()
+    records = state.get("records", {})
+    now = _utc_now()
+    attempted = 0
+    sent = 0
+    failed = 0
+
+    for key, record in records.items():
+        if not isinstance(record, dict) or not bool(record.get("notification_pending")):
+            continue
+
+        status = str(record.get("status") or "")
+        if record.get("notified_status") == status:
+            record["notification_pending"] = False
+            _write_state(state)
+            continue
+        if not _notification_retry_due(record, now):
+            continue
+
+        snapshot = record.get("notification_candidate")
+        if not isinstance(snapshot, dict):
+            failed += 1
+            record["last_notification_error_type"] = "MissingNotificationSnapshot"
+            _write_state(state)
+            continue
+
+        candidate = SimpleNamespace(**snapshot)
+        outcome = _outcome_from_record(str(key), record)
+        attempted += 1
+        record["last_notification_attempt_at_utc"] = _iso(now)
+        _write_state(state)
+
+        try:
+            _notify(candidate, outcome)
+        except Exception as exc:
+            failed += 1
+            record["last_notification_error_type"] = type(exc).__name__
+            print(
+                f"WARNING AUTO_WAITLIST pushover_retry_pending "
+                f"status={status} error={type(exc).__name__}",
+                flush=True,
+            )
+        else:
+            sent += 1
+            record["notified_status"] = status
+            record["notification_pending"] = False
+            record.pop("last_notification_error_type", None)
+            print(
+                f"AUTO_WAITLIST PUSHOVER_RETRY_SENT status={status}",
+                flush=True,
+            )
+        _write_state(state)
+
+    return {"attempted": attempted, "sent": sent, "failed": failed}
 
 
 def _retry_allowed(record: dict[str, Any], max_retries: int) -> bool:

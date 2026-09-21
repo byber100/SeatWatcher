@@ -49,7 +49,7 @@ from alert_bundle import (
 from bus_providers import BusCandidate, search_user_bus_routes
 from env_loader import load_project_env
 from last_mile import bus_last_mile, rail_last_mile
-from standby_reservation import attempt_auto_waitlist
+from standby_reservation import attempt_auto_waitlist, retry_pending_waitlist_notifications
 
 PUBLIC_CONFIG = ROOT / "watch_targets.json"
 LOCAL_CONFIG = ROOT / "watch_targets.local.json"
@@ -305,6 +305,14 @@ def collect_rail(
 
 def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
     cycle_started = time.perf_counter()
+    if notify:
+        retry_result = retry_pending_waitlist_notifications()
+        if retry_result["attempted"]:
+            print(
+                "AUTO_WAITLIST PUSHOVER_RETRY "
+                f"attempted={retry_result['attempted']} "
+                f"sent={retry_result['sent']} failed={retry_result['failed']}"
+            )
     state = load_json(
         STATE,
         {

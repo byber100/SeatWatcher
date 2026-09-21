@@ -4,7 +4,7 @@
 - `docs/`: 사용자와 ChatGPT가 개발 중 요구사항·판정 기준·구현 방향·검증 결과를 맞추는 협업 문서 공간. GitHub Pages 배포 루트와 분리
 - `deploy/`: 클라우드 Linux VM 설치 및 systemd 서비스 운영 도구. `control_plane_manage.py`는 별도 `seatwatcher-control` 서비스, `korail_headless_check.py`는 장애 진단용 Chromium 검증을 담당
 - `control_plane.py`: Google Drive 명령 큐를 읽어 화이트리스트 운영 명령을 실행하고 결과/상태 파일을 Drive에 업로드하며 KORAIL 보호 차단 self-heal을 조정하는 OCI 모바일 제어 데몬
-- `standby_reservation.py`: KORAIL 직통 예약대기 후보의 자동 신청, 중복 방지, fresh 재검증, 예약내역 확인, 성공/실패 Pushover를 담당. 결제는 수행하지 않음
+- `standby_reservation.py`: KORAIL 직통 예약대기 후보의 자동 신청, 중복 방지, fresh 재검증, 예약내역 확인, 성공/실패 Pushover와 전송 실패 시 mutation 없는 결과 알림 재시도를 담당. 결제는 수행하지 않음
 - `watcher.py`: 반복 감시 실행기, 잔여석/예매 형태 변동 상태 관리, polling 스케줄링, Pushover 단독 운영/테스트 CLI. `watch_targets.local.json`이 있으면 공개 기본 설정보다 우선 사용
 - `alert_bundle.py`: 같은 cycle의 변동을 Pushover 소리 정책별 묶음과 512자 이하 Pages 축약 링크 단위로 분리하며 GitHub Pages 상세 payload를 생성
 - `seatwatcher.py`: 단일 조회 CLI
