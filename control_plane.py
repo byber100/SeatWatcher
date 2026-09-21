@@ -32,6 +32,7 @@ ALLOWED_COMMANDS = {
     "verify_korail_full",
     "reload_targets",
     "tail_log",
+    "deploy_update",
 }
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
 DEFAULT_CONFIG = {
@@ -341,6 +342,70 @@ def command_status() -> dict[str, Any]:
     }
 
 
+def git_revision_state() -> dict[str, Any]:
+    """Return non-secret Git/deployment revisions for mobile observability."""
+    head = run_fixed(["git", "-C", str(ROOT), "rev-parse", "HEAD"], timeout=10)
+    origin = run_fixed(
+        ["git", "-C", str(ROOT), "rev-parse", "origin/main"],
+        timeout=10,
+    )
+    marker_path = ROOT / ".runtime" / "origin_main_runtime_revision.txt"
+    try:
+        marker = marker_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        marker = ""
+    return {
+        "head": head["stdout"].strip() if head["returncode"] == 0 else "",
+        "origin_main": origin["stdout"].strip() if origin["returncode"] == 0 else "",
+        "runtime_revision": marker,
+    }
+
+
+def deploy_update() -> dict[str, Any]:
+    """Fetch origin/main and restart watcher so the runtime sync bridge applies it.
+
+    No arbitrary ref, path, or shell input is accepted from Drive. The existing
+    env_loader runtime bridge atomically copies the approved watcher runtime
+    files from origin/main when seatwatcher.service starts.
+    """
+    fetched = run_fixed(
+        ["git", "-C", str(ROOT), "fetch", "--prune", "origin"],
+        timeout=60,
+    )
+    if fetched["returncode"] != 0:
+        return {
+            "ok": False,
+            "stage": "git_fetch",
+            "returncode": fetched["returncode"],
+            "stderr": tail_text(fetched["stderr"] or fetched["stdout"], 6000),
+            "revision": git_revision_state(),
+        }
+
+    before_restart = git_revision_state()
+    origin_revision = str(before_restart.get("origin_main") or "")
+    if re.fullmatch(r"[0-9a-f]{40}", origin_revision) is None:
+        return {
+            "ok": False,
+            "stage": "origin_revision",
+            "error": "invalid_origin_main_revision",
+            "revision": before_restart,
+        }
+
+    restarted = restart_watcher()
+    time.sleep(2)
+    after_restart = git_revision_state()
+    runtime_revision = str(after_restart.get("runtime_revision") or "")
+    applied = runtime_revision == origin_revision
+    return {
+        "ok": bool(restarted.get("ok")) and applied,
+        "stage": "complete" if applied else "runtime_revision_mismatch",
+        "origin_main": origin_revision,
+        "runtime_revision": runtime_revision,
+        "seatwatcher": restarted.get("seatwatcher"),
+        "restart_returncode": restarted.get("restart_returncode"),
+    }
+
+
 def restart_watcher() -> dict[str, Any]:
     restart = run_fixed(
         ["sudo", "-n", "systemctl", "restart", "seatwatcher"],
@@ -399,6 +464,8 @@ def execute_command(command: str, args: dict[str, Any]) -> dict[str, Any]:
         }
     if command == "tail_log":
         return tail_log(args)
+    if command == "deploy_update":
+        return deploy_update()
     raise AssertionError(command)
 
 
@@ -454,6 +521,7 @@ def build_health(
         "last_request_id": state.get("last_request_id"),
         "last_command": state.get("last_command"),
         "last_result_ok": state.get("last_result_ok"),
+        "revision": git_revision_state(),
         "korail_protection_marker": marker if isinstance(marker, dict) else {},
         "last_error": last_error,
     }
