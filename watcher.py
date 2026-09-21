@@ -49,6 +49,7 @@ from alert_bundle import (
 from bus_providers import BusCandidate, search_user_bus_routes
 from env_loader import load_project_env
 from last_mile import bus_last_mile, rail_last_mile
+from standby_reservation import attempt_auto_waitlist
 
 PUBLIC_CONFIG = ROOT / "watch_targets.json"
 LOCAL_CONFIG = ROOT / "watch_targets.local.json"
@@ -341,6 +342,10 @@ def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
     alertable_now: set[str] = set()
     sent: set[str] = set()
     pending_events: list[AlertEvent] = []
+    rail_target_by_id = {
+        str(target["id"]): target
+        for target in config.get("rail_targets", [])
+    }
 
     # 버스와 철도는 서로 다른 서비스이므로 네트워크 대기를 겹쳐도
     # 동일 공급자에 대한 요청 빈도는 늘지 않는다.
@@ -499,6 +504,32 @@ def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
         if not safe:
             current_rail_availability[item_key] = current_signature
             current_rail_quality[item_key] = quality
+            continue
+
+        target = rail_target_by_id.get(str(item.target_id), {})
+        auto_waitlist_candidate = (
+            notify
+            and bool(target.get("auto_waitlist"))
+            and item.kind == "DIRECT"
+            and quality <= 0
+            and "예약대기 가능" in str(item.seat_text)
+        )
+        if auto_waitlist_candidate:
+            outcome = attempt_auto_waitlist(
+                item,
+                target,
+                notify_result=True,
+            )
+            if outcome is not None:
+                print(
+                    f"AUTO_WAITLIST status={outcome.status} "
+                    f"success={outcome.success} attempted={outcome.attempted} "
+                    f"train={outcome.train_no} dep={outcome.departure_time}"
+                )
+            # 예약대기 가능 상태는 일반 좌석 알림 대신 자동 신청 결과만 알린다.
+            current_rail_availability[item_key] = current_signature
+            current_rail_quality[item_key] = quality
+            alertable_now.add(item_key)
             continue
 
         alertable_now.add(item_key)

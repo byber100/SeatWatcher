@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
+from pathlib import Path
 from types import SimpleNamespace
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
@@ -20,6 +23,36 @@ _KORAIL_PROCESS_CONFIG = None
 _NAVER_STOPS_BY_NAME: dict[str, dict] | None = None
 _KORAIL_DIRECT_RETRY_AFTER: dict[str, float] = {}
 KORAIL_DIRECT_RETRY_SECONDS = 3600.0
+KORAIL_PROTECTION_MARKER = Path(__file__).resolve().parent / ".runtime" / "korail_protection_failure.json"
+KORAIL_PROTECTION_TEXT = ("안정적인 환경", "미허가 도구", "매크로 등", "MACRO ERROR")
+
+
+def _record_korail_protection_failure(target_id: str, mode: str, exc: Exception) -> None:
+    if mode != "DIRECT":
+        return
+    message = str(exc)
+    if not any(token in message for token in KORAIL_PROTECTION_TEXT):
+        return
+    detected = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    event_id = hashlib.sha256(
+        f"{target_id}|{detected}|{type(exc).__name__}|{message}".encode("utf-8")
+    ).hexdigest()[:20]
+    payload = {
+        "event_id": event_id,
+        "detected_at_utc": detected,
+        "target_id": target_id,
+        "mode": mode,
+        "error_type": type(exc).__name__,
+        "message": message[:2000],
+    }
+    try:
+        KORAIL_PROTECTION_MARKER.parent.mkdir(parents=True, exist_ok=True)
+        temp = KORAIL_PROTECTION_MARKER.with_suffix(".tmp")
+        temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+        temp.replace(KORAIL_PROTECTION_MARKER)
+        print(f"KORAIL_PROTECTION_MARKER target={target_id} event={event_id}")
+    except OSError as marker_error:
+        print(f"WARNING KORAIL protection marker write failed: {marker_error}")
 
 
 def _korail_process_config(api):
@@ -148,6 +181,7 @@ class RailCandidate:
     second_availability_rank: int = 0
     departure_station_code: str = ""
     arrival_station_code: str = ""
+    train_no: str = ""
 
 
 @dataclass
@@ -554,6 +588,7 @@ def _direct(
                     0,
                     str(getattr(train, "departure_station_code", "") or "").strip(),
                     str(getattr(train, "arrival_station_code", "") or "").strip(),
+                    str(getattr(train, "train_no", "") or "").strip(),
                 )
             )
 
@@ -719,6 +754,7 @@ def _transfer(
                     _availability_rank(second),
                     str(getattr(first, "departure_station_code", "") or "").strip(),
                     str(getattr(second, "arrival_station_code", "") or "").strip(),
+                    str(getattr(first, "train_no", "") or "").strip(),
                 )
             )
 
@@ -868,6 +904,7 @@ def _naver_direct(target: dict) -> ModeScanResult:
                     0,
                     str(train.departure_station_code or "").strip(),
                     str(train.arrival_station_code or "").strip(),
+                    str(train.train_no or "").strip(),
                 )
             )
 
@@ -1017,6 +1054,7 @@ def _search_korail_mobile_targets(
                     target_failed = True
                     error_id = f"{target_id}:{mode}"
                     errors.append(error_id)
+                    _record_korail_protection_failure(target_id, mode, exc)
                     print(f"WARNING KORAIL target={target_id} mode={mode}: {exc}")
                     continue
                 if mode == "DIRECT":

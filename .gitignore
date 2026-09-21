@@ -1,6 +1,7 @@
 __pycache__/
 *.py[cod]
 .venv/
+.control-venv/
 .env.local
 .env.*
 !.env.example
