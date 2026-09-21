@@ -17,7 +17,7 @@ TEMPLATE_ENV = PROJECT_DIR / ".env"
 # 이 브리지는 서비스 시작 직전에 origin/main의 런타임 핵심 파일만 원자적으로
 # 동기화하고 한 번 재실행한다. 개인 설정/비밀/상태 파일은 절대 건드리지 않는다.
 OCI_DEPLOY_ROOT = Path("/home/ubuntu/SeatWatcher")
-OCI_DEPLOY_FILES = ("watcher.py", "standby_reservation.py")
+OCI_DEPLOY_FILES = ("watcher.py", "standby_reservation.py", "control_plane.py")
 OCI_DEPLOY_MARKER = PROJECT_DIR / ".runtime" / "origin_main_runtime_revision.txt"
 
 
@@ -46,12 +46,8 @@ def _sync_oci_runtime_from_origin_main() -> None:
         if not revision:
             raise RuntimeError("origin/main revision is empty")
 
-        if OCI_DEPLOY_MARKER.exists():
-            current = OCI_DEPLOY_MARKER.read_text(encoding="utf-8").strip()
-            if current == revision:
-                return
-
         payloads: dict[str, bytes] = {}
+        needs_sync = False
         for relative_name in OCI_DEPLOY_FILES:
             completed = subprocess.run(
                 ["git", "-C", str(PROJECT_DIR), "show", f"origin/main:{relative_name}"],
@@ -62,6 +58,14 @@ def _sync_oci_runtime_from_origin_main() -> None:
             if not completed.stdout:
                 raise RuntimeError(f"empty deployment payload: {relative_name}")
             payloads[relative_name] = completed.stdout
+            target = PROJECT_DIR / relative_name
+            if not target.exists() or target.read_bytes() != completed.stdout:
+                needs_sync = True
+
+        if OCI_DEPLOY_MARKER.exists():
+            current = OCI_DEPLOY_MARKER.read_text(encoding="utf-8").strip()
+            if current == revision and not needs_sync:
+                return
 
         # 모든 source payload 확보가 끝난 뒤에만 실제 파일을 바꾼다.
         for relative_name, payload in payloads.items():
