@@ -17,7 +17,7 @@ TEMPLATE_ENV = PROJECT_DIR / ".env"
 # 이 브리지는 서비스 시작 직전에 origin/main의 런타임 핵심 파일만 원자적으로
 # 동기화하고 한 번 재실행한다. 개인 설정/비밀/상태 파일은 절대 건드리지 않는다.
 OCI_DEPLOY_ROOT = Path("/home/ubuntu/SeatWatcher")
-OCI_DEPLOY_FILES = ("watcher.py", "standby_reservation.py", "control_plane.py")
+OCI_DEPLOY_FILES = ("watcher.py", "standby_reservation.py", "rail_provider.py", "auto_cart_reservation.py", "control_plane.py")
 OCI_DEPLOY_MARKER = PROJECT_DIR / ".runtime" / "origin_main_runtime_revision.txt"
 
 
