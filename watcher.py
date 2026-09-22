@@ -227,6 +227,13 @@ def collect_bus(config: dict) -> list[tuple[dict, list[BusCandidate]]]:
     cache: dict[tuple[str, str, str, str, str], list[BusCandidate]] = {}
     reused = 0
     for target in config.get("bus_targets", []):
+        if not _target_active_now(target):
+            print(
+                f"BUS TARGET_INACTIVE id={target.get('id', '?')} "
+                f"active_from_kst={target.get('active_from_kst', '')} "
+                f"active_until_kst={target.get('active_until_kst', '')}"
+            )
+            continue
         query_key = target_query_key(target)
         if query_key in cache:
             items = cache[query_key]
@@ -248,26 +255,67 @@ def collect_bus(config: dict) -> list[tuple[dict, list[BusCandidate]]]:
     return scans
 
 
-def _target_active_now(target: dict) -> bool:
-    raw = str(target.get("active_until_kst") or "").strip()
-    if not raw:
-        return True
-    digits = "".join(ch for ch in raw if ch.isdigit())
+KST = timezone(timedelta(hours=9))
+
+
+def _parse_kst_timestamp(raw: object, *, field: str, target_id: str) -> datetime | None:
+    text = str(raw or "").strip()
+    if not text:
+        return None
+    digits = "".join(ch for ch in text if ch.isdigit())
     if len(digits) != 14:
-        print(
-            f"WARNING TARGET active_until_kst invalid id={target.get('id', '?')} value={raw}"
-        )
-        return True
+        print(f"WARNING TARGET {field} invalid id={target_id} value={text}")
+        return None
     try:
-        deadline = datetime.strptime(digits, "%Y%m%d%H%M%S").replace(
-            tzinfo=timezone(timedelta(hours=9))
-        )
+        return datetime.strptime(digits, "%Y%m%d%H%M%S").replace(tzinfo=KST)
     except ValueError:
-        print(
-            f"WARNING TARGET active_until_kst invalid id={target.get('id', '?')} value={raw}"
+        print(f"WARNING TARGET {field} invalid id={target_id} value={text}")
+        return None
+
+
+def _target_active_now(target: dict, *, now: datetime | None = None) -> bool:
+    target_id = str(target.get("id", "?"))
+    current = now or datetime.now(KST)
+    active_from = _parse_kst_timestamp(
+        target.get("active_from_kst"), field="active_from_kst", target_id=target_id
+    )
+    active_until = _parse_kst_timestamp(
+        target.get("active_until_kst"), field="active_until_kst", target_id=target_id
+    )
+    if active_from is not None and current < active_from:
+        return False
+    if active_until is not None and current > active_until:
+        return False
+    return True
+
+
+def _shutdown_due(config: dict, *, now: datetime | None = None) -> bool:
+    raw = config.get("shutdown_at_kst")
+    if not raw:
+        return False
+    deadline = _parse_kst_timestamp(raw, field="shutdown_at_kst", target_id="config")
+    if deadline is None:
+        return False
+    return (now or datetime.now(KST)) >= deadline
+
+
+def _request_systemd_stop() -> bool:
+    if os.name == "nt":
+        return False
+    service_name = os.getenv("SEATWATCHER_SYSTEMD_SERVICE", "seatwatcher.service").strip()
+    if not service_name:
+        service_name = "seatwatcher.service"
+    try:
+        completed = subprocess.run(
+            ["sudo", "-n", "systemctl", "stop", service_name],
+            check=False,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            timeout=10,
         )
-        return True
-    return datetime.now(timezone(timedelta(hours=9))) <= deadline
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0
 
 
 def collect_rail(
@@ -924,7 +972,7 @@ def main() -> int:
             )
         except (TypeError, ValueError):
             requested_fast_interval = 30
-        fast_interval = min(60, max(20, requested_fast_interval))
+        fast_interval = min(60, max(15, requested_fast_interval))
         interval = min(base_interval, fast_interval)
         print(
             f"AUTO_RESERVATION_FAST_POLL interval={interval}s "
@@ -934,6 +982,24 @@ def main() -> int:
         interval = base_interval
 
     while True:
+        if args.watch and _shutdown_due(config):
+            print(
+                f"WATCH_SHUTDOWN deadline_kst={config.get('shutdown_at_kst')} "
+                "reason=configured_cutoff",
+                flush=True,
+            )
+            if _request_systemd_stop():
+                print("WATCH_SHUTDOWN systemd_stop=requested", flush=True)
+                return 0
+            print(
+                "WARNING WATCH_SHUTDOWN systemd_stop=failed; entering idle state",
+                flush=True,
+            )
+            while True:
+                try:
+                    time.sleep(3600)
+                except KeyboardInterrupt:
+                    return 0
         cycle_started = time.perf_counter()
         try:
             run_once(config, args.notify, rail_debug=args.rail_debug)

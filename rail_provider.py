@@ -22,7 +22,9 @@ NAVER_ROOM_BOOKABLE_CODES = {"11", "21", "23", "01", "39", "29", "19"}
 _KORAIL_PROCESS_CONFIG = None
 _NAVER_STOPS_BY_NAME: dict[str, dict] | None = None
 _KORAIL_DIRECT_RETRY_AFTER: dict[str, float] = {}
+_KORAIL_RESERVE_PROBE_NEXT: dict[str, float] = {}
 KORAIL_DIRECT_RETRY_SECONDS = 3600.0
+DEFAULT_RESERVE_PROBE_FAILURE_BACKOFF_SECONDS = 600.0
 KORAIL_PROTECTION_MARKER = Path(__file__).resolve().parent / ".runtime" / "korail_protection_failure.json"
 KORAIL_PROTECTION_TEXT = ("안정적인 환경", "미허가 도구", "매크로 등", "MACRO ERROR")
 
@@ -1181,7 +1183,25 @@ def _search_korail_mobile_targets(
             print(f"KORAIL_PARTIAL mode_errors={len(errors)} ids={','.join(errors)}")
     finally:
         client.close()
-    return sorted(rows, key=lambda item: (item.date, item.departure_time, item.target_id, item.kind))
+    deduped: dict[tuple[str, ...], RailCandidate] = {}
+    for item in rows:
+        key = (
+            item.target_id,
+            item.kind,
+            item.date,
+            item.departure_station,
+            item.arrival_station,
+            item.departure_time,
+            item.arrival_time,
+            item.train_no or item.train_text,
+        )
+        previous = deduped.get(key)
+        if previous is None or _candidate_availability_rank(item) > _candidate_availability_rank(previous):
+            deduped[key] = item
+    return sorted(
+        deduped.values(),
+        key=lambda item: (item.date, item.departure_time, item.target_id, item.kind),
+    )
 
 
 def search_korail_targets(
@@ -1210,11 +1230,6 @@ def search_korail_targets(
 
         if reserve_sensitive_targets:
             reserve_status: dict[str, bool] = {}
-            for target in reserve_sensitive_targets:
-                print(
-                    f"RAIL RESERVE-SAFE target={target.get('id', '?')} "
-                    "detector=NAVER korail_poll=skipped"
-                )
             rows.extend(
                 _search_naver_direct_targets(
                     reserve_sensitive_targets,
@@ -1222,6 +1237,83 @@ def search_korail_targets(
                     target_status=reserve_status,
                 )
             )
+
+            probe_now = time.monotonic()
+            reserve_probe_targets: list[dict] = []
+            for target in reserve_sensitive_targets:
+                target_id = str(target.get("id", "?"))
+                try:
+                    probe_interval = max(
+                        0.0, float(target.get("korail_probe_interval_seconds") or 0)
+                    )
+                except (TypeError, ValueError):
+                    probe_interval = 0.0
+
+                retry_after = _KORAIL_DIRECT_RETRY_AFTER.get(target_id, 0.0)
+                next_probe = _KORAIL_RESERVE_PROBE_NEXT.get(target_id, 0.0)
+                if probe_interval <= 0:
+                    print(
+                        f"RAIL RESERVE-SAFE target={target_id} "
+                        "detector=NAVER korail_probe=disabled"
+                    )
+                    continue
+                if probe_now < retry_after:
+                    remaining = max(1, int(retry_after - probe_now))
+                    print(
+                        f"RAIL RESERVE-SAFE target={target_id} detector=NAVER "
+                        f"korail_probe=cooldown retry_in={remaining}s"
+                    )
+                    continue
+                if probe_now < next_probe:
+                    remaining = max(1, int(next_probe - probe_now))
+                    print(
+                        f"RAIL RESERVE-SAFE target={target_id} detector=NAVER "
+                        f"korail_probe=scheduled next_in={remaining}s"
+                    )
+                    continue
+
+                reserve_probe_targets.append(target)
+                _KORAIL_RESERVE_PROBE_NEXT[target_id] = probe_now + probe_interval
+                print(
+                    f"RAIL RESERVE-PROBE target={target_id} "
+                    f"interval={int(probe_interval)}s status=due"
+                )
+
+            if reserve_probe_targets:
+                probe_status: dict[str, bool] = {}
+                probe_rows = _search_korail_mobile_targets(
+                    reserve_probe_targets,
+                    debug=debug,
+                    transfer_display_direct_threshold=transfer_display_direct_threshold,
+                    target_status=probe_status,
+                )
+                rows.extend(probe_rows)
+                for target in reserve_probe_targets:
+                    target_id = str(target.get("id", "?"))
+                    if probe_status.get(target_id, False):
+                        _KORAIL_DIRECT_RETRY_AFTER.pop(target_id, None)
+                        reserve_status[target_id] = True
+                        print(
+                            f"RAIL RESERVE-PROBE target={target_id} status=ok"
+                        )
+                        continue
+                    try:
+                        failure_backoff = max(
+                            120.0,
+                            float(
+                                target.get("korail_probe_failure_backoff_seconds")
+                                or DEFAULT_RESERVE_PROBE_FAILURE_BACKOFF_SECONDS
+                            ),
+                        )
+                    except (TypeError, ValueError):
+                        failure_backoff = DEFAULT_RESERVE_PROBE_FAILURE_BACKOFF_SECONDS
+                    _KORAIL_DIRECT_RETRY_AFTER[target_id] = probe_now + failure_backoff
+                    _KORAIL_RESERVE_PROBE_NEXT[target_id] = probe_now + failure_backoff
+                    print(
+                        f"RAIL RESERVE-PROBE target={target_id} status=failed "
+                        f"retry_in={int(failure_backoff)}s"
+                    )
+
             if target_status is not None:
                 for target in reserve_sensitive_targets:
                     target_id = str(target.get("id", "?"))
