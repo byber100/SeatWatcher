@@ -869,6 +869,16 @@ def main() -> int:
     if args.wide_rail_test:
         config = expand_rail_targets_for_wide_test(config)
 
+    if bool(config.get("startup_headless_verify")):
+        from control_plane import headless_check
+
+        result = headless_check()
+        print(
+            "HEADLESS_VERIFY "
+            + json.dumps(result, ensure_ascii=False, separators=(",", ":")),
+            flush=True,
+        )
+
     base_interval = max(60, int(config.get("poll_interval_seconds", 120)))
     auto_mutation_enabled = any(
         bool(target.get("auto_waitlist"))
