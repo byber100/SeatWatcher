@@ -389,7 +389,7 @@ def deploy_update() -> dict[str, Any]:
     syntax-checked before any live file is replaced. Existing files are backed
     up, replacements are atomic, and a failed service restart triggers rollback.
     """
-    approved_files = ("watcher.py", "standby_reservation.py")
+    approved_files = ("watcher.py", "standby_reservation.py", "rail_provider.py", "auto_cart_reservation.py")
 
     fetched = run_fixed(
         ["git", "-C", str(ROOT), "fetch", "--prune", "origin"],

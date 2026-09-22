@@ -1196,10 +1196,41 @@ def search_korail_targets(
     rows: list[RailCandidate] = []
 
     if direct_targets:
+        # For real-seat auto-reservation targets, preserve KORAIL mutation
+        # headroom: use NAVER only for 30s read detection and touch KORAIL only
+        # after a seat is actually advertised.
+        reserve_sensitive_targets = [
+            target for target in direct_targets
+            if bool(target.get("auto_reserve_to_cart"))
+        ]
+        normal_direct_targets = [
+            target for target in direct_targets
+            if not bool(target.get("auto_reserve_to_cart"))
+        ]
+
+        if reserve_sensitive_targets:
+            reserve_status: dict[str, bool] = {}
+            for target in reserve_sensitive_targets:
+                print(
+                    f"RAIL RESERVE-SAFE target={target.get('id', '?')} "
+                    "detector=NAVER korail_poll=skipped"
+                )
+            rows.extend(
+                _search_naver_direct_targets(
+                    reserve_sensitive_targets,
+                    debug=debug,
+                    target_status=reserve_status,
+                )
+            )
+            if target_status is not None:
+                for target in reserve_sensitive_targets:
+                    target_id = str(target.get("id", "?"))
+                    target_status[target_id] = reserve_status.get(target_id, False)
+
         now = time.monotonic()
         korail_targets: list[dict] = []
         fallback_targets: list[dict] = []
-        for target in direct_targets:
+        for target in normal_direct_targets:
             target_id = str(target.get("id", "?"))
             retry_after = _KORAIL_DIRECT_RETRY_AFTER.get(target_id, 0.0)
             if now < retry_after:
