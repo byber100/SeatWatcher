@@ -36,25 +36,64 @@ def _record_korail_protection_failure(target_id: str, mode: str, exc: Exception)
     if not any(token in message for token in KORAIL_PROTECTION_TEXT):
         return
     detected = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    event_id = hashlib.sha256(
-        f"{target_id}|{detected}|{type(exc).__name__}|{message}".encode("utf-8")
-    ).hexdigest()[:20]
+
+    existing: dict[str, object] = {}
+    try:
+        if KORAIL_PROTECTION_MARKER.exists():
+            parsed = json.loads(KORAIL_PROTECTION_MARKER.read_text(encoding="utf-8"))
+            if isinstance(parsed, dict):
+                existing = parsed
+    except (OSError, json.JSONDecodeError):
+        existing = {}
+
+    same_active_block = (
+        str(existing.get("target_id") or "") == str(target_id)
+        and str(existing.get("mode") or "") == mode
+        and str(existing.get("error_type") or "") == type(exc).__name__
+    )
+    if same_active_block and existing.get("event_id"):
+        event_id = str(existing["event_id"])
+        first_detected = str(existing.get("first_detected_at_utc") or existing.get("detected_at_utc") or detected)
+    else:
+        event_id = hashlib.sha256(
+            f"{target_id}|{detected}|{time.time_ns()}|{type(exc).__name__}|{message}".encode("utf-8")
+        ).hexdigest()[:20]
+        first_detected = detected
+
     payload = {
         "event_id": event_id,
+        "first_detected_at_utc": first_detected,
         "detected_at_utc": detected,
         "target_id": target_id,
         "mode": mode,
         "error_type": type(exc).__name__,
         "message": message[:2000],
+        "active": True,
     }
     try:
         KORAIL_PROTECTION_MARKER.parent.mkdir(parents=True, exist_ok=True)
         temp = KORAIL_PROTECTION_MARKER.with_suffix(".tmp")
         temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         temp.replace(KORAIL_PROTECTION_MARKER)
-        print(f"KORAIL_PROTECTION_MARKER target={target_id} event={event_id}")
+        state = "repeat" if same_active_block else "new"
+        print(f"KORAIL_PROTECTION_MARKER target={target_id} event={event_id} state={state}")
     except OSError as marker_error:
         print(f"WARNING KORAIL protection marker write failed: {marker_error}")
+
+
+def _clear_korail_protection_failure(target_id: str) -> None:
+    try:
+        if not KORAIL_PROTECTION_MARKER.exists():
+            return
+        marker = json.loads(KORAIL_PROTECTION_MARKER.read_text(encoding="utf-8"))
+        if not isinstance(marker, dict):
+            return
+        if str(marker.get("target_id") or "") != str(target_id):
+            return
+        KORAIL_PROTECTION_MARKER.unlink(missing_ok=True)
+        print(f"KORAIL_PROTECTION_RECOVERED target={target_id}")
+    except (OSError, json.JSONDecodeError) as exc:
+        print(f"WARNING KORAIL protection marker clear failed: {exc}")
 
 
 def _korail_process_config(api):
@@ -1091,6 +1130,8 @@ def _search_korail_mobile_targets(
             status_text = "일부실패" if target_failed else "완료"
             if target_status is not None:
                 target_status[str(target_id)] = not target_failed
+            if not target_failed and "DIRECT" in modes:
+                _clear_korail_protection_failure(str(target_id))
 
             print("  직통 운행")
             if direct_scan.schedule_lines:
