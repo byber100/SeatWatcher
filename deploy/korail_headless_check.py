@@ -170,14 +170,17 @@ def main() -> int:
             page.wait_for_timeout(300)
 
             requested_hour = int(hour)
-            hour_state = page.evaluate(
-                """(requested) => {
-                    const roots=[
-                      document.querySelector('.timeSelect'),
-                      document.querySelector('.time_select'),
-                      document
-                    ].filter(Boolean);
-                    for (const root of roots) {
+            observed_hours: set[int] = set()
+            hour_state = {"selected": None, "enabled": [], "next_clicked": False}
+            for _hour_page in range(8):
+                hour_state = page.evaluate(
+                    """(requested) => {
+                        const root =
+                          document.querySelector('.timeSelect') ||
+                          document.querySelector('.time_select');
+                        if (!root) {
+                            return {selected:null, enabled:[], next_clicked:false, debug:'root_missing'};
+                        }
                         const candidates=[...root.querySelectorAll('a,button')]
                           .map(node => ({
                             node,
@@ -194,21 +197,53 @@ def main() -> int:
                         );
                         if (exact) {
                             exact.node.click();
-                            return {selected:requested, enabled:[...new Set(enabled)]};
+                            return {selected:requested, enabled:[...new Set(enabled)], next_clicked:false};
                         }
-                        if (candidates.length) {
-                            return {selected:null, enabled:[...new Set(enabled)]};
+
+                        const scope =
+                          root.closest('.popup,.pop_wrap,.layer,.modal,.date_layer,.calendar') ||
+                          root.parentElement?.parentElement ||
+                          root.parentElement ||
+                          root;
+                        const navs=[...scope.querySelectorAll('a,button')]
+                          .filter(node => {
+                            const text=(node.innerText||'').trim().replace('시','');
+                            if (/^([01]?[0-9]|2[0-3])$/.test(text)) return false;
+                            const meta=[
+                              node.innerText||'',
+                              node.getAttribute('aria-label')||'',
+                              node.getAttribute('title')||'',
+                              typeof node.className==='string' ? node.className : ''
+                            ].join(' ').toLowerCase();
+                            return /다음|next|right|arr[_-]?r|arrow[_-]?right|btn[_-]?next|swiper-button-next/.test(meta) &&
+                              node.getAttribute('aria-disabled')!=='true';
+                          });
+                        if (navs.length) {
+                            navs[0].click();
+                            return {selected:null, enabled:[...new Set(enabled)], next_clicked:true};
                         }
-                    }
-                    return {selected:null, enabled:[]};
-                }""",
-                requested_hour,
-            )
+                        return {
+                          selected:null,
+                          enabled:[...new Set(enabled)],
+                          next_clicked:false,
+                          debug:(scope.outerHTML||'').slice(0,4000)
+                        };
+                    }""",
+                    requested_hour,
+                )
+                observed_hours.update(int(value) for value in (hour_state.get("enabled") or []))
+                if hour_state.get("selected") == requested_hour:
+                    break
+                if not hour_state.get("next_clicked"):
+                    break
+                page.wait_for_timeout(250)
+
             state["requested_hour"] = requested_hour
-            state["enabled_hours"] = list(hour_state.get("enabled") or [])
+            state["enabled_hours"] = sorted(observed_hours)
             state["selected_hour"] = hour_state.get("selected")
             state["hour_exact"] = state["selected_hour"] == requested_hour
             if not state["hour_exact"]:
+                state["hour_debug"] = hour_state.get("debug")
                 save(state)
                 raise RuntimeError(
                     f"requested hour unavailable in KORAIL web UI: "
