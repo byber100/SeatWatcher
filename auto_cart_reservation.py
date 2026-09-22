@@ -41,6 +41,8 @@ class CartReservationOutcome:
     departure_time: str
     verified_in_history: bool = False
     verified_in_cart: bool = False
+    payment_deadline_date: str = ""
+    payment_deadline_time: str = ""
 
 
 def _utc_now() -> datetime:
@@ -49,6 +51,84 @@ def _utc_now() -> datetime:
 
 def _iso(value: datetime) -> str:
     return value.isoformat(timespec="seconds")
+
+
+KST = timezone(timedelta(hours=9))
+
+
+def _alarm_policy() -> dict[str, Any]:
+    policy: dict[str, Any] = {
+        "night_start": "2300",
+        "night_end": "0700",
+        "night_sound": "persistent",
+        "night_priority": 2,
+        "night_retry_seconds": 60,
+    }
+    try:
+        config = json.loads((ROOT / "watch_targets.local.json").read_text(encoding="utf-8"))
+        configured = (
+            config.get("notification", {})
+            .get("auto_reservation", {})
+        )
+        if isinstance(configured, dict):
+            policy.update(configured)
+    except (FileNotFoundError, json.JSONDecodeError, OSError, AttributeError):
+        pass
+    return policy
+
+
+def _is_night_alarm_window(now: datetime, policy: dict[str, Any]) -> bool:
+    def hhmm(value: object, default: int) -> int:
+        digits = "".join(ch for ch in str(value or "") if ch.isdigit())
+        if len(digits) < 4:
+            return default
+        return int(digits[:2]) * 100 + int(digits[2:4])
+
+    current = now.hour * 100 + now.minute
+    start = hhmm(policy.get("night_start"), 2300)
+    end = hhmm(policy.get("night_end"), 700)
+    if start == end:
+        return True
+    if start < end:
+        return start <= current < end
+    return current >= start or current < end
+
+
+def _deadline_from_history(item: object) -> tuple[str, str]:
+    raw = getattr(item, "raw", {}) or {}
+    if not isinstance(raw, dict):
+        return "", ""
+    return (
+        str(raw.get("h_ntisu_lmt_dt") or ""),
+        str(raw.get("h_ntisu_lmt_tm") or ""),
+    )
+
+
+def _deadline_display(outcome: CartReservationOutcome) -> str:
+    date = "".join(ch for ch in outcome.payment_deadline_date if ch.isdigit())
+    tm = "".join(ch for ch in outcome.payment_deadline_time if ch.isdigit())
+    if len(tm) >= 6:
+        time_text = f"{tm[:2]}:{tm[2:4]}:{tm[4:6]}"
+    elif len(tm) >= 4:
+        time_text = f"{tm[:2]}:{tm[2:4]}"
+    else:
+        return ""
+    if len(date) == 8:
+        return f"{date[4:6]}/{date[6:8]} {time_text}"
+    return time_text
+
+
+def _deadline_seconds(outcome: CartReservationOutcome, now: datetime) -> int | None:
+    date = "".join(ch for ch in outcome.payment_deadline_date if ch.isdigit())
+    tm = "".join(ch for ch in outcome.payment_deadline_time if ch.isdigit())
+    if len(date) != 8 or len(tm) < 4:
+        return None
+    padded = (tm + "000000")[:6]
+    try:
+        deadline = datetime.strptime(date + padded, "%Y%m%d%H%M%S").replace(tzinfo=KST)
+    except ValueError:
+        return None
+    return max(0, int((deadline - now).total_seconds()))
 
 
 def _norm(value: object) -> str:
@@ -121,12 +201,36 @@ def _notify(candidate: object, outcome: CartReservationOutcome) -> None:
         f"{getattr(candidate, 'train_text', '')}\n"
         f"{outcome.message}"
     )
+    deadline_text = _deadline_display(outcome)
+    if deadline_text:
+        body += f"\n결제 마감 {deadline_text}"
+
+    policy = _alarm_policy()
+    sound = "vibrate"
+    priority = 0
+    retry = None
+    expire = None
+    now_kst = datetime.now(KST)
+    if outcome.success and _is_night_alarm_window(now_kst, policy):
+        sound = str(policy.get("night_sound") or "persistent")
+        priority = int(policy.get("night_priority") or 2)
+        remaining = _deadline_seconds(outcome, now_kst)
+        if priority == 2:
+            if remaining is not None and remaining > 0:
+                retry = max(30, int(policy.get("night_retry_seconds") or 60))
+                expire = max(30, min(10800, remaining))
+            else:
+                priority = 1
+
     link_url = os.getenv("SEATWATCHER_ALERT_PAGE_URL", "").strip() or DEFAULT_ALERT_PAGE_URL
     send_message(
         body,
         link_url=link_url,
-        sound="vibrate",
+        sound=sound,
         title=f"SeatWatcher 자동예약 {prefix}",
+        priority=priority,
+        retry=retry,
+        expire=expire,
     )
 
 
@@ -142,6 +246,8 @@ def _outcome_from_record(key: str, record: dict[str, Any]) -> CartReservationOut
         departure_time=str(record.get("departure_time") or ""),
         verified_in_history=bool(record.get("verified_in_history")),
         verified_in_cart=bool(record.get("verified_in_cart")),
+        payment_deadline_date=str(record.get("payment_deadline_date") or ""),
+        payment_deadline_time=str(record.get("payment_deadline_time") or ""),
     )
 
 
@@ -169,6 +275,8 @@ def _record_outcome(
         "departure_time": outcome.departure_time,
         "verified_in_history": outcome.verified_in_history,
         "verified_in_cart": outcome.verified_in_cart,
+        "payment_deadline_date": outcome.payment_deadline_date,
+        "payment_deadline_time": outcome.payment_deadline_time,
         "updated_at_utc": _iso(now),
     }
     if next_retry_seconds is not None:
@@ -339,6 +447,8 @@ def attempt_auto_reserve_to_cart(
     client = api.KorailClient(api.KorailConfig(enable_dynapath=True))
     stage = "login"
     pnr_no = ""
+    payment_deadline_date = ""
+    payment_deadline_time = ""
     try:
         client.login(member_no, password)
 
@@ -346,6 +456,9 @@ def attempt_auto_reserve_to_cart(
         previous_reservation = _find_history_match(client, candidate)
         if previous_reservation is not None:
             pnr_no = str(getattr(previous_reservation, "pnr_no", "") or "")
+            payment_deadline_date, payment_deadline_time = _deadline_from_history(
+                previous_reservation
+            )
             in_cart = _cart_has_pnr(client, pnr_no) if pnr_no else False
             if pnr_no and not in_cart:
                 cart_consent = api.MutationConsent(allow_cart=True, dry_run=False)
@@ -369,6 +482,8 @@ def attempt_auto_reserve_to_cart(
                 departure_time,
                 True,
                 in_cart,
+                payment_deadline_date,
+                payment_deadline_time,
             )
             return _record_outcome(
                 candidate, outcome, terminal=True, notify_result=notify_result
@@ -394,6 +509,12 @@ def attempt_auto_reserve_to_cart(
         pnr_no = str(getattr(hold, "pnr_no", "") or "")
         if not pnr_no:
             raise RuntimeError("reservation hold has no pnr")
+        payment_deadline_date = str(
+            getattr(hold, "payment_deadline_date", "") or ""
+        )
+        payment_deadline_time = str(
+            getattr(hold, "payment_deadline_time", "") or ""
+        )
 
         stage = "cart"
         cart_consent = api.MutationConsent(allow_cart=True, dry_run=False)
@@ -423,6 +544,8 @@ def attempt_auto_reserve_to_cart(
                 departure_time,
                 True,
                 True,
+                payment_deadline_date,
+                payment_deadline_time,
             ),
             terminal=True,
             notify_result=notify_result,
@@ -438,6 +561,9 @@ def attempt_auto_reserve_to_cart(
                     recovered_pnr = str(getattr(history, "pnr_no", "") or "")
                     if recovered_pnr:
                         pnr_no = recovered_pnr
+                    payment_deadline_date, payment_deadline_time = _deadline_from_history(
+                        history
+                    )
             except Exception:
                 history_ok = False
             if pnr_no:
@@ -460,6 +586,8 @@ def attempt_auto_reserve_to_cart(
                     departure_time,
                     True,
                     True,
+                    payment_deadline_date,
+                    payment_deadline_time,
                 ),
                 terminal=True,
                 notify_result=notify_result,

@@ -13,7 +13,7 @@ MAX_MESSAGE_LENGTH = 1024
 MAX_TITLE_LENGTH = 250
 MAX_URL_TITLE_LENGTH = 100
 MAX_URL_LENGTH = 512
-ALLOWED_SOUNDS = {"vibrate"}
+ALLOWED_SOUNDS = {"vibrate", "persistent", "siren", "pushover", "none"}
 
 
 def _env(name: str, *, required: bool = False) -> str:
@@ -61,6 +61,9 @@ def build_message_form(
     link_url: str,
     sound: str,
     title: str = "SeatWatcher",
+    priority: int = 0,
+    retry: int | None = None,
+    expire: int | None = None,
 ) -> dict[str, str]:
     message = text.strip()
     if not message:
@@ -73,7 +76,14 @@ def build_message_form(
         raise ValueError("Pushover 링크 URL은 512자를 넘을 수 없습니다.")
     sound_value = sound.strip()
     if sound_value not in ALLOWED_SOUNDS:
-        raise ValueError("Pushover sound는 vibrate만 허용합니다.")
+        raise ValueError(f"지원하지 않는 Pushover sound입니다: {sound_value}")
+    if priority not in {-2, -1, 0, 1, 2}:
+        raise ValueError("Pushover priority는 -2~2 범위여야 합니다.")
+    if priority == 2:
+        if retry is None or int(retry) < 30:
+            raise ValueError("Emergency priority는 retry>=30초가 필요합니다.")
+        if expire is None or not (1 <= int(expire) <= 10800):
+            raise ValueError("Emergency priority는 expire 1~10800초가 필요합니다.")
 
     form = {
         "token": _env("SEATWATCHER_PUSHOVER_APP_TOKEN", required=True),
@@ -82,9 +92,12 @@ def build_message_form(
         "title": title[:MAX_TITLE_LENGTH],
         "url": link_url,
         "url_title": "예매 확인"[:MAX_URL_TITLE_LENGTH],
-        "priority": "0",
+        "priority": str(priority),
         "sound": sound_value,
     }
+    if priority == 2:
+        form["retry"] = str(int(retry))
+        form["expire"] = str(int(expire))
     device = _env("SEATWATCHER_PUSHOVER_DEVICE")
     if device:
         form["device"] = device
@@ -97,10 +110,21 @@ def send_message(
     link_url: str,
     sound: str,
     title: str = "SeatWatcher",
+    priority: int = 0,
+    retry: int | None = None,
+    expire: int | None = None,
 ) -> dict[str, Any]:
     payload = _post_form(
         SEND_URL,
-        build_message_form(text, link_url=link_url, sound=sound, title=title),
+        build_message_form(
+            text,
+            link_url=link_url,
+            sound=sound,
+            title=title,
+            priority=priority,
+            retry=retry,
+            expire=expire,
+        ),
     )
     if int(payload.get("status") or 0) != 1:
         raise RuntimeError(f"Pushover 메시지 발송 실패: {payload}")

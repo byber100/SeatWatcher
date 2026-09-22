@@ -248,12 +248,41 @@ def collect_bus(config: dict) -> list[tuple[dict, list[BusCandidate]]]:
     return scans
 
 
+def _target_active_now(target: dict) -> bool:
+    raw = str(target.get("active_until_kst") or "").strip()
+    if not raw:
+        return True
+    digits = "".join(ch for ch in raw if ch.isdigit())
+    if len(digits) != 14:
+        print(
+            f"WARNING TARGET active_until_kst invalid id={target.get('id', '?')} value={raw}"
+        )
+        return True
+    try:
+        deadline = datetime.strptime(digits, "%Y%m%d%H%M%S").replace(
+            tzinfo=timezone(timedelta(hours=9))
+        )
+    except ValueError:
+        print(
+            f"WARNING TARGET active_until_kst invalid id={target.get('id', '?')} value={raw}"
+        )
+        return True
+    return datetime.now(timezone(timedelta(hours=9))) <= deadline
+
+
 def collect_rail(
     config: dict,
     *,
     debug: bool = False,
 ) -> tuple[list[object], set[str]]:
-    targets = config.get("rail_targets", [])
+    all_targets = config.get("rail_targets", [])
+    targets = [target for target in all_targets if _target_active_now(target)]
+    for target in all_targets:
+        if target not in targets:
+            print(
+                f"RAIL TARGET_INACTIVE id={target.get('id', '?')} "
+                f"active_until_kst={target.get('active_until_kst', '')}"
+            )
     if not targets:
         return [], set()
     if not os.getenv("SEATWATCHER_KORAIL_MEMBER_NO") or not os.getenv("SEATWATCHER_KORAIL_PASSWORD"):
