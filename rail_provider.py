@@ -26,7 +26,22 @@ _KORAIL_RESERVE_PROBE_NEXT: dict[str, float] = {}
 KORAIL_DIRECT_RETRY_SECONDS = 3600.0
 DEFAULT_RESERVE_PROBE_FAILURE_BACKOFF_SECONDS = 600.0
 KORAIL_PROTECTION_MARKER = Path(__file__).resolve().parent / ".runtime" / "korail_protection_failure.json"
+KORAIL_PROTECTION_HISTORY = Path(__file__).resolve().parent / ".runtime" / "korail_protection_history.jsonl"
 KORAIL_PROTECTION_TEXT = ("안정적인 환경", "미허가 도구", "매크로 등", "MACRO ERROR")
+
+
+def _append_protection_history(payload: dict[str, object]) -> None:
+    try:
+        KORAIL_PROTECTION_HISTORY.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "time_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            **payload,
+        }
+        with KORAIL_PROTECTION_HISTORY.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+    except OSError:
+        pass
+
 
 
 def _record_korail_protection_failure(target_id: str, mode: str, exc: Exception) -> None:
@@ -76,6 +91,16 @@ def _record_korail_protection_failure(target_id: str, mode: str, exc: Exception)
         temp.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
         temp.replace(KORAIL_PROTECTION_MARKER)
         state = "repeat" if same_active_block else "new"
+        _append_protection_history(
+            {
+                "event": "blocked_repeat" if same_active_block else "blocked",
+                "event_id": event_id,
+                "target_id": target_id,
+                "mode": mode,
+                "error_type": type(exc).__name__,
+                "first_detected_at_utc": first_detected,
+            }
+        )
         print(f"KORAIL_PROTECTION_MARKER target={target_id} event={event_id} state={state}")
     except OSError as marker_error:
         print(f"WARNING KORAIL protection marker write failed: {marker_error}")
@@ -90,8 +115,32 @@ def _clear_korail_protection_failure(target_id: str) -> None:
             return
         if str(marker.get("target_id") or "") != str(target_id):
             return
+        first_detected = str(
+            marker.get("first_detected_at_utc") or marker.get("detected_at_utc") or ""
+        )
+        recovered_at = datetime.now(timezone.utc)
+        duration_seconds = None
+        try:
+            if first_detected:
+                started = datetime.fromisoformat(first_detected.replace("Z", "+00:00"))
+                duration_seconds = max(0, int((recovered_at - started).total_seconds()))
+        except ValueError:
+            duration_seconds = None
+        _append_protection_history(
+            {
+                "event": "recovered",
+                "event_id": str(marker.get("event_id") or ""),
+                "target_id": target_id,
+                "first_detected_at_utc": first_detected,
+                "recovered_at_utc": recovered_at.isoformat(timespec="seconds"),
+                "duration_seconds": duration_seconds,
+            }
+        )
         KORAIL_PROTECTION_MARKER.unlink(missing_ok=True)
-        print(f"KORAIL_PROTECTION_RECOVERED target={target_id}")
+        print(
+            f"KORAIL_PROTECTION_RECOVERED target={target_id} "
+            f"duration_seconds={duration_seconds}"
+        )
     except (OSError, json.JSONDecodeError) as exc:
         print(f"WARNING KORAIL protection marker clear failed: {exc}")
 

@@ -5,6 +5,8 @@ import os
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 
@@ -14,6 +16,21 @@ MAX_TITLE_LENGTH = 250
 MAX_URL_TITLE_LENGTH = 100
 MAX_URL_LENGTH = 512
 ALLOWED_SOUNDS = {"vibrate", "persistent", "siren", "pushover", "none"}
+NOTIFICATION_HISTORY = Path(__file__).resolve().parent / ".runtime" / "notification_history.jsonl"
+
+
+def _append_notification_history(payload: dict[str, Any]) -> None:
+    try:
+        NOTIFICATION_HISTORY.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "time_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            **payload,
+        }
+        with NOTIFICATION_HISTORY.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+    except OSError:
+        pass
+
 
 
 def _env(name: str, *, required: bool = False) -> str:
@@ -114,18 +131,49 @@ def send_message(
     retry: int | None = None,
     expire: int | None = None,
 ) -> dict[str, Any]:
-    payload = _post_form(
-        SEND_URL,
-        build_message_form(
-            text,
-            link_url=link_url,
-            sound=sound,
-            title=title,
-            priority=priority,
-            retry=retry,
-            expire=expire,
-        ),
+    try:
+        payload = _post_form(
+            SEND_URL,
+            build_message_form(
+                text,
+                link_url=link_url,
+                sound=sound,
+                title=title,
+                priority=priority,
+                retry=retry,
+                expire=expire,
+            ),
+        )
+        if int(payload.get("status") or 0) != 1:
+            raise RuntimeError(f"Pushover 메시지 발송 실패: {payload}")
+    except Exception as exc:
+        _append_notification_history(
+            {
+                "status": "failed",
+                "title": title[:MAX_TITLE_LENGTH],
+                "sound": sound,
+                "priority": priority,
+                "retry": retry,
+                "expire": expire,
+                "message": text.strip()[:500],
+                "link_url": link_url,
+                "error_type": type(exc).__name__,
+                "error": str(exc)[:500],
+            }
+        )
+        raise
+
+    _append_notification_history(
+        {
+            "status": "sent",
+            "title": title[:MAX_TITLE_LENGTH],
+            "sound": sound,
+            "priority": priority,
+            "retry": retry,
+            "expire": expire,
+            "message": text.strip()[:500],
+            "link_url": link_url,
+            "receipt": str(payload.get("receipt") or ""),
+        }
     )
-    if int(payload.get("status") or 0) != 1:
-        raise RuntimeError(f"Pushover 메시지 발송 실패: {payload}")
     return payload

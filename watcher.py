@@ -59,6 +59,21 @@ from auto_cart_reservation import (
 PUBLIC_CONFIG = ROOT / "watch_targets.json"
 LOCAL_CONFIG = ROOT / "watch_targets.local.json"
 STATE = ROOT / ".runtime" / "watch_state.json"
+MONITOR_HISTORY = ROOT / ".runtime" / "monitor_history.jsonl"
+
+
+def _append_monitor_history(payload: dict) -> None:
+    try:
+        MONITOR_HISTORY.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "time_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            **payload,
+        }
+        with MONITOR_HISTORY.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+    except OSError:
+        pass
+
 
 
 def load_json(path: Path, default: dict | None = None) -> dict:
@@ -891,6 +906,33 @@ def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
             completed_baselines,
         )
     elapsed = time.perf_counter() - cycle_started
+    now_kst = datetime.now(KST)
+    active_bus_target_ids = [
+        str(target.get("id", "?"))
+        for target in config.get("bus_targets", [])
+        if _target_active_now(target, now=now_kst)
+    ]
+    active_rail_target_ids = [
+        str(target.get("id", "?"))
+        for target in config.get("rail_targets", [])
+        if _target_active_now(target, now=now_kst)
+    ]
+    _append_monitor_history(
+        {
+            "event": "cycle",
+            "time_kst": now_kst.isoformat(timespec="seconds"),
+            "active_bus_targets": active_bus_target_ids,
+            "active_rail_targets": active_rail_target_ids,
+            "bus_candidates": len(buses),
+            "rail_candidates": len(rails),
+            "rail_targets_ok": sorted(successful_rail_targets),
+            "alertable": len(alertable_now),
+            "pending_alerts": len(pending_events),
+            "sent_alert_keys": len(sent),
+            "notify": bool(notify),
+            "cycle_seconds": round(elapsed, 3),
+        }
+    )
     print(
         f"SUMMARY bus={len(buses)} rail={len(rails)} alertable={len(alertable_now)} "
         f"notify={notify} cycle_seconds={elapsed:.1f}"
@@ -981,8 +1023,26 @@ def main() -> int:
     else:
         interval = base_interval
 
+    _append_monitor_history(
+        {
+            "event": "watch_start" if args.watch else "run_once_start",
+            "interval_seconds": interval,
+            "notify": bool(args.notify),
+            "shutdown_at_kst": str(config.get("shutdown_at_kst") or ""),
+            "rail_target_ids": [str(t.get("id", "?")) for t in config.get("rail_targets", [])],
+            "bus_target_ids": [str(t.get("id", "?")) for t in config.get("bus_targets", [])],
+        }
+    )
+
     while True:
         if args.watch and _shutdown_due(config):
+            _append_monitor_history(
+                {
+                    "event": "watch_stop",
+                    "reason": "configured_cutoff",
+                    "shutdown_at_kst": str(config.get("shutdown_at_kst") or ""),
+                }
+            )
             print(
                 f"WATCH_SHUTDOWN deadline_kst={config.get('shutdown_at_kst')} "
                 "reason=configured_cutoff",
@@ -1004,6 +1064,13 @@ def main() -> int:
         try:
             run_once(config, args.notify, rail_debug=args.rail_debug)
         except Exception as exc:
+            _append_monitor_history(
+                {
+                    "event": "cycle_error",
+                    "error_type": type(exc).__name__,
+                    "error": str(exc)[:1000],
+                }
+            )
             print(f"ERROR cycle: {exc}")
         if not args.watch:
             return 0
@@ -1016,6 +1083,7 @@ def main() -> int:
         try:
             time.sleep(sleep_seconds)
         except KeyboardInterrupt:
+            _append_monitor_history({"event": "watch_stop", "reason": "keyboard_interrupt"})
             print("SeatWatcher stopped")
             return 0
 

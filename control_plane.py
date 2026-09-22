@@ -8,7 +8,7 @@ import subprocess
 import sys
 import time
 import urllib.request
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -25,15 +25,21 @@ TARGETS_PATH = ROOT / "watch_targets.local.json"
 RESULTS_DIR = RUNTIME / "results"
 DIAGNOSTICS_DIR = RUNTIME / "diagnostics"
 KORAIL_PROTECTION_MARKER = ROOT / ".runtime" / "korail_protection_failure.json"
+KORAIL_PROTECTION_HISTORY = ROOT / ".runtime" / "korail_protection_history.jsonl"
+MONITOR_HISTORY = ROOT / ".runtime" / "monitor_history.jsonl"
+NOTIFICATION_HISTORY = ROOT / ".runtime" / "notification_history.jsonl"
 
 ALLOWED_COMMANDS = {
     "status",
+    "start",
+    "stop",
     "restart",
     "test_korail",
     "verify_korail_full",
     "reload_targets",
     "set_targets",
     "tail_log",
+    "monitor_report",
     "deploy_update",
 }
 REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9._:-]{1,128}$")
@@ -345,6 +351,62 @@ def command_status() -> dict[str, Any]:
     }
 
 
+def _append_control_monitor_event(event: str, **extra: Any) -> None:
+    try:
+        MONITOR_HISTORY.parent.mkdir(parents=True, exist_ok=True)
+        record = {
+            "time_utc": utc_now(),
+            "event": event,
+            "source": "control_plane",
+            **extra,
+        }
+        with MONITOR_HISTORY.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False, separators=(",", ":")) + "\n")
+    except OSError:
+        pass
+
+
+def start_watcher() -> dict[str, Any]:
+    result = run_fixed(
+        ["sudo", "-n", "systemctl", "start", "seatwatcher"],
+        timeout=30,
+    )
+    time.sleep(1)
+    state = systemd_state("seatwatcher")
+    _append_control_monitor_event(
+        "control_start",
+        ok=result["returncode"] == 0 and state.get("active") == "active",
+    )
+    return {
+        "ok": result["returncode"] == 0 and state.get("active") == "active",
+        "action": "start",
+        "returncode": result["returncode"],
+        "stderr": tail_text(result["stderr"], 4000),
+        "seatwatcher": state,
+    }
+
+
+def stop_watcher() -> dict[str, Any]:
+    result = run_fixed(
+        ["sudo", "-n", "systemctl", "stop", "seatwatcher"],
+        timeout=30,
+    )
+    time.sleep(1)
+    state = systemd_state("seatwatcher")
+    _append_control_monitor_event(
+        "control_stop",
+        ok=result["returncode"] == 0 and state.get("active") != "active",
+    )
+    return {
+        "ok": result["returncode"] == 0 and state.get("active") != "active",
+        "action": "stop",
+        "returncode": result["returncode"],
+        "stderr": tail_text(result["stderr"], 4000),
+        "seatwatcher": state,
+        "control": systemd_state("seatwatcher-control"),
+    }
+
+
 def git_revision_state() -> dict[str, Any]:
     """Return non-secret Git/deployment revisions for mobile observability."""
     head = run_fixed(["git", "-C", str(ROOT), "rev-parse", "HEAD"], timeout=10)
@@ -511,6 +573,7 @@ def restart_watcher() -> dict[str, Any]:
     status["restart_returncode"] = restart["returncode"]
     status["restart_stderr"] = restart["stderr"]
     status["ok"] = restart["returncode"] == 0 and status["seatwatcher"]["active"] == "active"
+    _append_control_monitor_event("control_restart", ok=bool(status["ok"]))
     return status
 
 
@@ -603,11 +666,126 @@ def tail_log(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _recent_jsonl(path: Path, minutes: int, limit: int = 2000) -> list[dict[str, Any]]:
+    cutoff = datetime.now(timezone.utc) - timedelta(minutes=minutes)
+    rows: list[dict[str, Any]] = []
+    try:
+        with path.open("r", encoding="utf-8") as handle:
+            for line in handle:
+                try:
+                    item = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(item, dict):
+                    continue
+                when = parse_utc(str(item.get("time_utc") or ""))
+                if when is None or when < cutoff:
+                    continue
+                rows.append(item)
+    except (FileNotFoundError, OSError):
+        return []
+    return rows[-limit:]
+
+
+def _target_report(config: dict[str, Any]) -> dict[str, Any]:
+    def compact(target: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "id": target.get("id"),
+            "date": target.get("date"),
+            "departure": target.get("departure"),
+            "arrival": target.get("arrival"),
+            "start": target.get("start"),
+            "end": target.get("end"),
+            "active_from_kst": target.get("active_from_kst"),
+            "active_until_kst": target.get("active_until_kst"),
+            "auto_reserve_to_cart": bool(target.get("auto_reserve_to_cart")),
+            "korail_probe_interval_seconds": target.get("korail_probe_interval_seconds"),
+            "korail_probe_failure_backoff_seconds": target.get(
+                "korail_probe_failure_backoff_seconds"
+            ),
+        }
+
+    return {
+        "shutdown_at_kst": config.get("shutdown_at_kst"),
+        "poll_interval_seconds": config.get("poll_interval_seconds"),
+        "auto_reservation_poll_interval_seconds": config.get(
+            "auto_reservation_poll_interval_seconds"
+        ),
+        "rail_targets": [compact(t) for t in config.get("rail_targets", [])],
+        "bus_targets": [compact(t) for t in config.get("bus_targets", [])],
+    }
+
+
+def monitor_report(args: dict[str, Any]) -> dict[str, Any]:
+    try:
+        minutes = max(5, min(1440, int(args.get("minutes", 120))))
+    except (TypeError, ValueError):
+        minutes = 120
+
+    monitor_rows = _recent_jsonl(MONITOR_HISTORY, minutes, 3000)
+    notifications = _recent_jsonl(NOTIFICATION_HISTORY, minutes, 200)
+    protection = _recent_jsonl(KORAIL_PROTECTION_HISTORY, minutes, 500)
+    cycles = [row for row in monitor_rows if row.get("event") == "cycle"]
+    errors = [row for row in monitor_rows if row.get("event") == "cycle_error"]
+    lifecycle = [
+        row
+        for row in monitor_rows
+        if row.get("event") in {
+            "watch_start",
+            "watch_stop",
+            "run_once_start",
+            "control_start",
+            "control_stop",
+            "control_restart",
+        }
+    ]
+
+    avg_cycle = None
+    values = [
+        float(row.get("cycle_seconds") or 0.0)
+        for row in cycles
+        if isinstance(row.get("cycle_seconds"), (int, float))
+    ]
+    if values:
+        avg_cycle = round(sum(values) / len(values), 3)
+
+    config = read_json(TARGETS_PATH, {})
+    marker_payload = read_json(KORAIL_PROTECTION_MARKER, {})
+    marker = marker_payload if isinstance(marker_payload, dict) else {}
+    return {
+        "ok": True,
+        "time_utc": utc_now(),
+        "window_minutes": minutes,
+        "service": {
+            "seatwatcher": systemd_state("seatwatcher"),
+            "control": systemd_state("seatwatcher-control"),
+        },
+        "targets": _target_report(config if isinstance(config, dict) else {}),
+        "monitor": {
+            "cycle_count": len(cycles),
+            "average_cycle_seconds": avg_cycle,
+            "last_cycle": cycles[-1] if cycles else None,
+            "lifecycle": lifecycle[-20:],
+            "errors": errors[-20:],
+        },
+        "notifications": notifications[-100:],
+        "korail_protection": {
+            "active_marker": marker,
+            "history": protection[-100:],
+        },
+        "revision": git_revision_state(),
+    }
+
+
 def execute_command(command: str, args: dict[str, Any]) -> dict[str, Any]:
     if command not in ALLOWED_COMMANDS:
         return {"ok": False, "error": f"command_not_allowed:{command}"}
     if command == "status":
         return command_status()
+    if command == "start":
+        return start_watcher()
+    if command == "stop":
+        return stop_watcher()
     if command in {"restart", "reload_targets"}:
         return restart_watcher()
     if command == "set_targets":
@@ -624,6 +802,8 @@ def execute_command(command: str, args: dict[str, Any]) -> dict[str, Any]:
         }
     if command == "tail_log":
         return tail_log(args)
+    if command == "monitor_report":
+        return monitor_report(args)
     if command == "deploy_update":
         return deploy_update()
     raise AssertionError(command)
