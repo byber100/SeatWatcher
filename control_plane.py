@@ -21,6 +21,7 @@ STATE_PATH = RUNTIME / "state.json"
 COMMANDS_XLSX = RUNTIME / "commands.xlsx"
 HEALTH_PATH = RUNTIME / "health.json"
 LATEST_RESULT_PATH = RUNTIME / "latest_result.json"
+TARGETS_PATH = ROOT / "watch_targets.local.json"
 RESULTS_DIR = RUNTIME / "results"
 DIAGNOSTICS_DIR = RUNTIME / "diagnostics"
 KORAIL_PROTECTION_MARKER = ROOT / ".runtime" / "korail_protection_failure.json"
@@ -31,6 +32,7 @@ ALLOWED_COMMANDS = {
     "test_korail",
     "verify_korail_full",
     "reload_targets",
+    "set_targets",
     "tail_log",
     "deploy_update",
 }
@@ -512,6 +514,69 @@ def restart_watcher() -> dict[str, Any]:
     return status
 
 
+def _validate_targets_config(config: dict[str, Any]) -> None:
+    if not isinstance(config.get("rail_targets", []), list):
+        raise ValueError("rail_targets must be a list")
+    if not isinstance(config.get("bus_targets", []), list):
+        raise ValueError("bus_targets must be a list")
+    if len(config.get("rail_targets", [])) > 32 or len(config.get("bus_targets", [])) > 32:
+        raise ValueError("too many targets")
+
+    shutdown = str(config.get("shutdown_at_kst") or "")
+    if shutdown and (len(shutdown) != 14 or not shutdown.isdigit()):
+        raise ValueError("shutdown_at_kst must be YYYYMMDDHHMMSS")
+
+    for kind in ("rail_targets", "bus_targets"):
+        for target in config.get(kind, []):
+            if not isinstance(target, dict):
+                raise ValueError(f"{kind} entries must be objects")
+            target_id = str(target.get("id") or "")
+            if not target_id or len(target_id) > 128:
+                raise ValueError(f"{kind} target id is invalid")
+            date = str(target.get("date") or "")
+            if len(date) != 8 or not date.isdigit():
+                raise ValueError(f"{target_id}: date must be YYYYMMDD")
+            if not str(target.get("departure") or "").strip():
+                raise ValueError(f"{target_id}: departure is required")
+            if not str(target.get("arrival") or "").strip():
+                raise ValueError(f"{target_id}: arrival is required")
+            for field in ("start", "end"):
+                value = str(target.get(field) or "")
+                if len(value) not in {4, 6} or not value.isdigit():
+                    raise ValueError(f"{target_id}: {field} must be HHMM or HHMMSS")
+            for field in ("active_from_kst", "active_until_kst"):
+                value = str(target.get(field) or "")
+                if value and (len(value) != 14 or not value.isdigit()):
+                    raise ValueError(f"{target_id}: {field} must be YYYYMMDDHHMMSS")
+
+
+def set_targets(args: dict[str, Any]) -> dict[str, Any]:
+    config = args.get("config")
+    if not isinstance(config, dict):
+        return {"ok": False, "error": "config_object_required"}
+    _validate_targets_config(config)
+
+    encoded = json.dumps(config, ensure_ascii=False, indent=2) + "\n"
+    temp = TARGETS_PATH.with_suffix(".tmp")
+    temp.write_text(encoded, encoding="utf-8")
+    temp.chmod(0o600)
+    temp.replace(TARGETS_PATH)
+    try:
+        TARGETS_PATH.chmod(0o600)
+    except OSError:
+        pass
+
+    status = restart_watcher()
+    return {
+        "ok": bool(status.get("ok")),
+        "rail_targets": len(config.get("rail_targets", [])),
+        "bus_targets": len(config.get("bus_targets", [])),
+        "shutdown_at_kst": str(config.get("shutdown_at_kst") or ""),
+        "restart_returncode": status.get("restart_returncode"),
+        "seatwatcher": status.get("seatwatcher"),
+    }
+
+
 def tail_log(args: dict[str, Any]) -> dict[str, Any]:
     try:
         lines = int(args.get("lines", 60))
@@ -545,6 +610,8 @@ def execute_command(command: str, args: dict[str, Any]) -> dict[str, Any]:
         return command_status()
     if command in {"restart", "reload_targets"}:
         return restart_watcher()
+    if command == "set_targets":
+        return set_targets(args)
     if command == "test_korail":
         return korail_test()
     if command == "verify_korail_full":
