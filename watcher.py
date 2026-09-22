@@ -50,6 +50,11 @@ from bus_providers import BusCandidate, search_user_bus_routes
 from env_loader import load_project_env
 from last_mile import bus_last_mile, rail_last_mile
 from standby_reservation import attempt_auto_waitlist, retry_pending_waitlist_notifications
+from auto_cart_reservation import (
+    attempt_auto_reserve_to_cart,
+    is_designated_seat_candidate,
+    retry_pending_cart_notifications,
+)
 
 PUBLIC_CONFIG = ROOT / "watch_targets.json"
 LOCAL_CONFIG = ROOT / "watch_targets.local.json"
@@ -303,6 +308,72 @@ def collect_rail(
         return [], set()
 
 
+def _is_auto_cart_candidate(item: object, target: dict, notify: bool) -> bool:
+    return (
+        notify
+        and bool(target.get("auto_reserve_to_cart"))
+        and getattr(item, "kind", "") == "DIRECT"
+        and rail_quality(item) > 0
+        and is_designated_seat_candidate(item)
+    )
+
+
+def _run_auto_cart_fast_path(
+    rails: list[object],
+    rail_target_by_id: dict[str, dict],
+    notify: bool,
+) -> tuple[dict[str, object | None], set[str]]:
+    """Reserve a real seat before unrelated work, then put the unpaid PNR in cart."""
+    outcomes: dict[str, object | None] = {}
+    claimed_target_ids: set[str] = set()
+    if not notify:
+        return outcomes, claimed_target_ids
+
+    for item in rails:
+        target_id = str(getattr(item, "target_id", "") or "")
+        if target_id in claimed_target_ids:
+            continue
+        target = rail_target_by_id.get(target_id, {})
+        if not _is_auto_cart_candidate(item, target, notify):
+            continue
+
+        safe, reason = rail_last_mile(item)
+        if not safe:
+            print(
+                f"AUTO_CART_FAST skipped=last_mile target={target_id} "
+                f"reason={reason}"
+            )
+            continue
+
+        item_key = rail_key(item)
+        started = time.perf_counter()
+        outcome = attempt_auto_reserve_to_cart(item, target, notify_result=True)
+        outcomes[item_key] = outcome
+        elapsed_ms = (time.perf_counter() - started) * 1000.0
+
+        if outcome is None:
+            print(
+                f"AUTO_CART_FAST status=skipped target={target_id} "
+                f"latency_ms={elapsed_ms:.0f}"
+            )
+            continue
+
+        print(
+            f"AUTO_CART_FAST status={outcome.status} "
+            f"success={outcome.success} reserve={outcome.attempted_reservation} "
+            f"cart={outcome.attempted_cart} train={outcome.train_no} "
+            f"dep={outcome.departure_time} latency_ms={elapsed_ms:.0f}"
+        )
+        if (
+            outcome.attempted_reservation
+            or outcome.success
+            or outcome.status in {"already_reserved", "reservation_ambiguous", "cart_ambiguous"}
+        ):
+            claimed_target_ids.add(target_id)
+
+    return outcomes, claimed_target_ids
+
+
 def _is_auto_waitlist_candidate(item: object, target: dict, notify: bool) -> bool:
     return (
         notify
@@ -385,6 +456,13 @@ def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
                 f"attempted={retry_result['attempted']} "
                 f"sent={retry_result['sent']} failed={retry_result['failed']}"
             )
+        cart_retry = retry_pending_cart_notifications()
+        if cart_retry["attempted"]:
+            print(
+                "AUTO_CART PUSHOVER_RETRY "
+                f"attempted={cart_retry['attempted']} "
+                f"sent={cart_retry['sent']} failed={cart_retry['failed']}"
+            )
     state = load_json(
         STATE,
         {
@@ -433,11 +511,20 @@ def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
         bus_future = executor.submit(collect_bus, config)
         rails, successful_rail_targets = collect_rail(config, debug=rail_debug)
 
-        # Reservation standby is latency-sensitive. Execute it immediately
-        # after the KORAIL result is available instead of waiting for unrelated
-        # bus I/O, printing, state bookkeeping, or bundled notifications.
+        # Real designated seats are the highest-priority mutation. Reserve and
+        # put the unpaid PNR in cart immediately after rail results arrive.
+        auto_cart_outcomes, auto_cart_claimed_targets = (
+            _run_auto_cart_fast_path(rails, rail_target_by_id, notify)
+        )
+
+        # Reservation standby is lower priority and only applies when no real
+        # designated seat was claimed for the target in this cycle.
+        waitlist_rails = [
+            item for item in rails
+            if str(getattr(item, "target_id", "") or "") not in auto_cart_claimed_targets
+        ]
         auto_waitlist_outcomes, auto_waitlist_claimed_targets = (
-            _run_auto_waitlist_fast_path(rails, rail_target_by_id, notify)
+            _run_auto_waitlist_fast_path(waitlist_rails, rail_target_by_id, notify)
         )
         bus_scans = bus_future.result()
 
@@ -594,6 +681,32 @@ def run_once(config: dict, notify: bool, *, rail_debug: bool = False) -> None:
             continue
 
         target = rail_target_by_id.get(str(item.target_id), {})
+        auto_cart_candidate = _is_auto_cart_candidate(item, target, notify)
+        if auto_cart_candidate:
+            if (
+                item_key not in auto_cart_outcomes
+                and str(item.target_id) not in auto_cart_claimed_targets
+            ):
+                outcome = attempt_auto_reserve_to_cart(
+                    item,
+                    target,
+                    notify_result=True,
+                )
+                auto_cart_outcomes[item_key] = outcome
+                if outcome is not None:
+                    print(
+                        f"AUTO_CART_FALLBACK status={outcome.status} "
+                        f"success={outcome.success} "
+                        f"reserve={outcome.attempted_reservation} "
+                        f"cart={outcome.attempted_cart} "
+                        f"train={outcome.train_no} dep={outcome.departure_time}"
+                    )
+            # Auto-reservation result notification replaces the ordinary seat alert.
+            current_rail_availability[item_key] = current_signature
+            current_rail_quality[item_key] = quality
+            alertable_now.add(item_key)
+            continue
+
         auto_waitlist_candidate = _is_auto_waitlist_candidate(item, target, notify)
         if auto_waitlist_candidate:
             # The fast path above normally handled this before bus/result work.
