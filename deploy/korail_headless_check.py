@@ -172,7 +172,7 @@ def main() -> int:
             requested_hour = int(hour)
             observed_hours: set[int] = set()
             hour_state = {"selected": None, "enabled": [], "next_clicked": False}
-            for _hour_page in range(8):
+            for _hour_page in range(16):
                 hour_state = page.evaluate(
                     """(requested) => {
                         const root =
