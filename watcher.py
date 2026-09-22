@@ -870,21 +870,25 @@ def main() -> int:
         config = expand_rail_targets_for_wide_test(config)
 
     base_interval = max(60, int(config.get("poll_interval_seconds", 120)))
-    auto_waitlist_enabled = any(
+    auto_mutation_enabled = any(
         bool(target.get("auto_waitlist"))
+        or bool(target.get("auto_reserve_to_cart"))
         for target in config.get("rail_targets", [])
     )
-    if auto_waitlist_enabled:
+    if auto_mutation_enabled:
         try:
             requested_fast_interval = int(
-                config.get("auto_waitlist_poll_interval_seconds", 30)
+                config.get(
+                    "auto_reservation_poll_interval_seconds",
+                    config.get("auto_waitlist_poll_interval_seconds", 30),
+                )
             )
         except (TypeError, ValueError):
             requested_fast_interval = 30
         fast_interval = min(60, max(20, requested_fast_interval))
         interval = min(base_interval, fast_interval)
         print(
-            f"AUTO_WAITLIST_FAST_POLL interval={interval}s "
+            f"AUTO_RESERVATION_FAST_POLL interval={interval}s "
             f"base_interval={base_interval}s"
         )
     else:
